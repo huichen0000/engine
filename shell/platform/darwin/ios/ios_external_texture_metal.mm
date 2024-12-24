@@ -5,10 +5,12 @@
 #import "flutter/shell/platform/darwin/ios/ios_external_texture_metal.h"
 #include "flow/layers/layer.h"
 
+FLUTTER_ASSERT_ARC
+
 namespace flutter {
 
 IOSExternalTextureMetal::IOSExternalTextureMetal(
-    const fml::scoped_nsobject<FlutterDarwinExternalTextureMetal>& darwin_external_texture_metal)
+    FlutterDarwinExternalTextureMetal* darwin_external_texture_metal)
     : Texture([darwin_external_texture_metal textureID]),
       darwin_external_texture_metal_(darwin_external_texture_metal) {}
 

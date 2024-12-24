@@ -4,13 +4,13 @@
 
 import 'dart:io' as io;
 
-import 'package:litetest/litetest.dart';
+import 'package:engine_repo_tools/engine_repo_tools.dart';
 import 'package:path/path.dart' as path;
+import 'package:test/test.dart';
 
 import '../bin/format.dart' as target;
 
-final io.File script = io.File.fromUri(io.Platform.script).absolute;
-final io.Directory repoDir = script.parent.parent.parent;
+final io.Directory repoDir = Engine.findWithin().flutterDir;
 
 class FileContentPair {
   FileContentPair(this.original, this.formatted);
@@ -23,6 +23,8 @@ final FileContentPair ccContentPair = FileContentPair(
     'int main(){return 0;}\n', 'int main() {\n  return 0;\n}\n');
 final FileContentPair hContentPair =
     FileContentPair('int\nmain\n()\n;\n', 'int main();\n');
+final FileContentPair dartContentPair = FileContentPair(
+    'enum \n\nfoo {\n  entry1,\n  entry2,\n}', 'enum foo { entry1, entry2 }\n');
 final FileContentPair gnContentPair = FileContentPair(
     'test\n(){testvar=true}\n', 'test() {\n  testvar = true\n}\n');
 final FileContentPair javaContentPair = FileContentPair(
@@ -32,8 +34,22 @@ final FileContentPair pythonContentPair = FileContentPair(
     "if __name__=='__main__':\n  sys.exit(\nMain(sys.argv)\n)\n",
     "if __name__ == '__main__':\n  sys.exit(Main(sys.argv))\n");
 final FileContentPair whitespaceContentPair = FileContentPair(
-    'int main() {\n  return 0;       \n}\n',
-    'int main() {\n  return 0;\n}\n');
+    'int main() {\n  return 0;       \n}\n', 'int main() {\n  return 0;\n}\n');
+final FileContentPair headerContentPair = FileContentPair(
+  <String>[
+    '#ifndef FOO_H_',
+    '#define FOO_H_',
+    '',
+    '#endif  // FOO_H_',
+  ].join('\n'),
+  <String>[
+    '#ifndef FLUTTER_FORMAT_TEST_H_',
+    '#define FLUTTER_FORMAT_TEST_H_',
+    '',
+    '#endif  // FLUTTER_FORMAT_TEST_H_',
+    '',
+  ].join('\n'),
+);
 
 class TestFileFixture {
   TestFileFixture(this.type) {
@@ -46,6 +62,10 @@ class TestFileFixture {
         final io.File hFile = io.File('${repoDir.path}/format_test.h');
         hFile.writeAsStringSync(hContentPair.original);
         files.add(hFile);
+      case target.FormatCheck.dart:
+        final io.File dartFile = io.File('${repoDir.path}/format_test.dart');
+        dartFile.writeAsStringSync(dartContentPair.original);
+        files.add(dartFile);
       case target.FormatCheck.gn:
         final io.File gnFile = io.File('${repoDir.path}/format_test.gn');
         gnFile.writeAsStringSync(gnContentPair.original);
@@ -62,6 +82,10 @@ class TestFileFixture {
         final io.File whitespaceFile = io.File('${repoDir.path}/format_test.c');
         whitespaceFile.writeAsStringSync(whitespaceContentPair.original);
         files.add(whitespaceFile);
+      case target.FormatCheck.header:
+        final io.File headerFile = io.File('${repoDir.path}/format_test.h');
+        headerFile.writeAsStringSync(headerContentPair.original);
+        files.add(headerFile);
     }
   }
 
@@ -98,6 +122,11 @@ class TestFileFixture {
                 ? ccContentPair.formatted
                 : hContentPair.formatted,
           );
+        case target.FormatCheck.dart:
+          return FileContentPair(
+            content,
+            dartContentPair.formatted,
+          );
         case target.FormatCheck.gn:
           return FileContentPair(
             content,
@@ -117,6 +146,11 @@ class TestFileFixture {
           return FileContentPair(
             content,
             whitespaceContentPair.formatted,
+          );
+        case target.FormatCheck.header:
+          return FileContentPair(
+            content,
+            headerContentPair.formatted,
           );
       }
     });
@@ -138,6 +172,41 @@ void main() {
       for (final FileContentPair pair in files) {
         expect(pair.original, equals(pair.formatted));
       }
+    } finally {
+      fixture.gitRemove();
+    }
+  });
+
+  test('Can fix Dart formatting errors', () {
+    final TestFileFixture fixture = TestFileFixture(target.FormatCheck.dart);
+    try {
+      fixture.gitAdd();
+      io.Process.runSync(formatterPath, <String>['--check', 'dart', '--fix'],
+          workingDirectory: repoDir.path);
+
+      final Iterable<FileContentPair> files = fixture.getFileContents();
+      for (final FileContentPair pair in files) {
+        expect(pair.original, equals(pair.formatted));
+      }
+    } finally {
+      fixture.gitRemove();
+    }
+  });
+
+  test('Prints error if dart formatter fails', () {
+    final TestFileFixture fixture = TestFileFixture(target.FormatCheck.dart);
+    final io.File dartFile = io.File('${repoDir.path}/format_test2.dart');
+    dartFile.writeAsStringSync('P\n');
+    fixture.files.add(dartFile);
+
+    try {
+      fixture.gitAdd();
+      final io.ProcessResult result = io.Process.runSync(
+        formatterPath, <String>['--check', 'dart', '--fix'],
+        workingDirectory: repoDir.path,
+      );
+      expect(result.stdout, contains('format_test2.dart produced the following error'));
+      expect(result.exitCode, isNot(0));
     } finally {
       fixture.gitRemove();
     }
@@ -173,9 +242,7 @@ void main() {
     } finally {
       fixture.gitRemove();
     }
-    // TODO(mtolmacs): Fails if Java dependency is unavailable,
-    // https://github.com/flutter/flutter/issues/129221
-  }, skip: true);
+  });
 
   test('Can fix Python formatting errors', () {
     final TestFileFixture fixture = TestFileFixture(target.FormatCheck.python);
@@ -202,6 +269,24 @@ void main() {
           formatterPath, <String>['--check', 'whitespace', '--fix'],
           workingDirectory: repoDir.path);
 
+      final Iterable<FileContentPair> files = fixture.getFileContents();
+      for (final FileContentPair pair in files) {
+        expect(pair.original, equals(pair.formatted));
+      }
+    } finally {
+      fixture.gitRemove();
+    }
+  });
+
+  test('Can fix header guard formatting errors', () {
+    final TestFileFixture fixture = TestFileFixture(target.FormatCheck.header);
+    try {
+      fixture.gitAdd();
+      io.Process.runSync(
+        formatterPath,
+        <String>['--check', 'header', '--fix'],
+        workingDirectory: repoDir.path,
+      );
       final Iterable<FileContentPair> files = fixture.getFileContents();
       for (final FileContentPair pair in files) {
         expect(pair.original, equals(pair.formatted));

@@ -7,7 +7,6 @@
 
 #include <Metal/Metal.h>
 
-#include "flutter/fml/macros.h"
 #include "impeller/core/allocator.h"
 #include "impeller/renderer/command_buffer.h"
 
@@ -21,13 +20,15 @@ class CommandBufferMTL final : public CommandBuffer {
  private:
   friend class ContextMTL;
 
-  id<MTLCommandBuffer> buffer_ = nullptr;
+  id<MTLCommandBuffer> buffer_ = nil;
+  id<MTLDevice> device_ = nil;
 
   CommandBufferMTL(const std::weak_ptr<const Context>& context,
+                   id<MTLDevice> device,
                    id<MTLCommandQueue> queue);
 
   // |CommandBuffer|
-  void SetLabel(const std::string& label) const override;
+  void SetLabel(std::string_view label) const override;
 
   // |CommandBuffer|
   bool IsValid() const override;
@@ -36,14 +37,10 @@ class CommandBufferMTL final : public CommandBuffer {
   bool OnSubmitCommands(CompletionCallback callback) override;
 
   // |CommandBuffer|
+  void OnWaitUntilCompleted() override;
+
+  // |CommandBuffer|
   void OnWaitUntilScheduled() override;
-
-  // |CommandBuffer|
-  bool EncodeAndSubmit(const std::shared_ptr<RenderPass>& render_pass) override;
-
-  // |CommandBuffer|
-  bool EncodeAndSubmit(const std::shared_ptr<BlitPass>& blit_ass,
-                       const std::shared_ptr<Allocator>& allocator) override;
 
   // |CommandBuffer|
   std::shared_ptr<RenderPass> OnCreateRenderPass(RenderTarget target) override;

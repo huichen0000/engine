@@ -9,11 +9,10 @@
 #include <utility>
 #include <vector>
 
-#include "fml/macros.h"
-#include "fml/thread_local.h"
 #include "impeller/base/thread_safety.h"
 #include "impeller/renderer/backend/vulkan/vk.h"  // IWYU pragma: keep.
 #include "third_party/swiftshader/include/vulkan/vulkan_core.h"
+#include "vulkan/vulkan.hpp"
 #include "vulkan/vulkan_core.h"
 
 namespace impeller {
@@ -33,6 +32,21 @@ struct MockQueryPool {};
 struct MockCommandPool {};
 
 struct MockDescriptorPool {};
+
+struct MockSurfaceKHR {};
+
+struct MockImage {};
+
+struct MockSwapchainKHR {
+  std::array<MockImage, 3> images;
+  size_t current_image = 0;
+};
+
+struct MockSemaphore {};
+
+struct MockFramebuffer {};
+
+static ISize currentImageSize = ISize{1, 1};
 
 class MockDevice final {
  public:
@@ -80,21 +94,21 @@ class MockDevice final {
   MockDevice& operator=(const MockDevice&) = delete;
 
   Mutex called_functions_mutex_;
-  std::shared_ptr<std::vector<std::string>> called_functions_
-      IPLR_GUARDED_BY(called_functions_mutex_);
+  std::shared_ptr<std::vector<std::string>> called_functions_ IPLR_GUARDED_BY(
+      called_functions_mutex_);
 
   Mutex command_buffers_mutex_;
   std::vector<std::unique_ptr<MockCommandBuffer>> command_buffers_
       IPLR_GUARDED_BY(command_buffers_mutex_);
 
   Mutex commmand_pools_mutex_;
-  std::vector<std::unique_ptr<MockCommandPool>> command_pools_
-      IPLR_GUARDED_BY(commmand_pools_mutex_);
+  std::vector<std::unique_ptr<MockCommandPool>> command_pools_ IPLR_GUARDED_BY(
+      commmand_pools_mutex_);
 };
 
 void noop() {}
 
-FML_THREAD_LOCAL std::vector<std::string> g_instance_extensions;
+static thread_local std::vector<std::string> g_instance_extensions;
 
 VkResult vkEnumerateInstanceExtensionProperties(
     const char* pLayerName,
@@ -114,7 +128,7 @@ VkResult vkEnumerateInstanceExtensionProperties(
   return VK_SUCCESS;
 }
 
-FML_THREAD_LOCAL std::vector<std::string> g_instance_layers;
+static thread_local std::vector<std::string> g_instance_layers;
 
 VkResult vkEnumerateInstanceLayerProperties(uint32_t* pPropertyCount,
                                             VkLayerProperties* pProperties) {
@@ -143,20 +157,21 @@ VkResult vkEnumeratePhysicalDevices(VkInstance instance,
   return VK_SUCCESS;
 }
 
+static thread_local std::function<void(VkPhysicalDevice physicalDevice,
+                                       VkFormat format,
+                                       VkFormatProperties* pFormatProperties)>
+    g_format_properties_callback;
+
 void vkGetPhysicalDeviceFormatProperties(
     VkPhysicalDevice physicalDevice,
     VkFormat format,
     VkFormatProperties* pFormatProperties) {
-  if (format == VK_FORMAT_B8G8R8A8_UNORM) {
-    pFormatProperties->optimalTilingFeatures =
-        static_cast<VkFormatFeatureFlags>(
-            vk::FormatFeatureFlagBits::eColorAttachment);
-  } else if (format == VK_FORMAT_S8_UINT) {
-    pFormatProperties->optimalTilingFeatures =
-        static_cast<VkFormatFeatureFlags>(
-            vk::FormatFeatureFlagBits::eDepthStencilAttachment);
-  }
+  g_format_properties_callback(physicalDevice, format, pFormatProperties);
 }
+
+static thread_local std::function<void(VkPhysicalDevice physicalDevice,
+                                       VkPhysicalDeviceProperties* pProperties)>
+    g_physical_device_properties_callback;
 
 void vkGetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
                                    VkPhysicalDeviceProperties* pProperties) {
@@ -165,6 +180,9 @@ void vkGetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
                                       VK_SAMPLE_COUNT_4_BIT);
   pProperties->limits.maxImageDimension2D = 4096;
   pProperties->limits.timestampPeriod = 1;
+  if (g_physical_device_properties_callback) {
+    g_physical_device_properties_callback(physicalDevice, pProperties);
+  }
 }
 
 void vkGetPhysicalDeviceQueueFamilyProperties(
@@ -212,14 +230,20 @@ VkResult vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo,
 void vkGetPhysicalDeviceMemoryProperties(
     VkPhysicalDevice physicalDevice,
     VkPhysicalDeviceMemoryProperties* pMemoryProperties) {
-  pMemoryProperties->memoryTypeCount = 1;
+  pMemoryProperties->memoryTypeCount = 2;
+  pMemoryProperties->memoryHeapCount = 2;
   pMemoryProperties->memoryTypes[0].heapIndex = 0;
-  // pMemoryProperties->memoryTypes[0].propertyFlags =
-  //     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-  //     VK_MEMORY_PROPERTY_DEVICE_COHERENT_BIT_AMD;
-  pMemoryProperties->memoryHeapCount = 1;
+  pMemoryProperties->memoryTypes[0].propertyFlags =
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+  pMemoryProperties->memoryTypes[1].heapIndex = 1;
+  pMemoryProperties->memoryTypes[1].propertyFlags =
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
   pMemoryProperties->memoryHeaps[0].size = 1024 * 1024 * 1024;
-  pMemoryProperties->memoryHeaps[0].flags = 0;
+  pMemoryProperties->memoryHeaps[0].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+  pMemoryProperties->memoryHeaps[1].size = 1024 * 1024 * 1024;
+  pMemoryProperties->memoryHeaps[1].flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
 }
 
 VkResult vkCreatePipelineCache(VkDevice device,
@@ -254,6 +278,7 @@ VkResult vkAllocateCommandBuffers(
     const VkCommandBufferAllocateInfo* pAllocateInfo,
     VkCommandBuffer* pCommandBuffers) {
   MockDevice* mock_device = reinterpret_cast<MockDevice*>(device);
+  mock_device->AddCalledFunction("vkAllocateCommandBuffers");
   *pCommandBuffers =
       reinterpret_cast<VkCommandBuffer>(mock_device->NewCommandBuffer());
   return VK_SUCCESS;
@@ -331,6 +356,8 @@ VkResult vkCreateRenderPass(VkDevice device,
                             const VkAllocationCallbacks* pAllocator,
                             VkRenderPass* pRenderPass) {
   *pRenderPass = reinterpret_cast<VkRenderPass>(0x12341234);
+  MockDevice* mock_device = reinterpret_cast<MockDevice*>(device);
+  mock_device->AddCalledFunction("vkCreateRenderPass");
   return VK_SUCCESS;
 }
 
@@ -401,6 +428,12 @@ void vkDestroyPipelineCache(VkDevice device,
   mock_device->AddCalledFunction("vkDestroyPipelineCache");
 }
 
+void vkDestroySurfaceKHR(VkInstance instance,
+                         VkSurfaceKHR surface,
+                         const VkAllocationCallbacks* pAllocator) {
+  return;
+}
+
 void vkCmdBindPipeline(VkCommandBuffer commandBuffer,
                        VkPipelineBindPoint pipelineBindPoint,
                        VkPipeline pipeline) {
@@ -461,6 +494,7 @@ VkResult vkCreateFence(VkDevice device,
                        const VkAllocationCallbacks* pAllocator,
                        VkFence* pFence) {
   MockDevice* mock_device = reinterpret_cast<MockDevice*>(device);
+  mock_device->AddCalledFunction("vkCreateFence");
   *pFence = reinterpret_cast<VkFence>(new MockFence());
   return VK_SUCCESS;
 }
@@ -493,6 +527,12 @@ VkResult vkGetFenceStatus(VkDevice device, VkFence fence) {
   return mock_fence->GetStatus();
 }
 
+VkResult vkResetFences(VkDevice device,
+                       uint32_t fenceCount,
+                       const VkFence* fences) {
+  return VK_SUCCESS;
+}
+
 VkResult vkCreateDebugUtilsMessengerEXT(
     VkInstance instance,
     const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
@@ -515,6 +555,14 @@ VkResult vkCreateQueryPool(VkDevice device,
   MockDevice* mock_device = reinterpret_cast<MockDevice*>(device);
   mock_device->AddCalledFunction("vkCreateQueryPool");
   return VK_SUCCESS;
+}
+
+void vkDestroyQueryPool(VkDevice device,
+                        VkQueryPool queryPool,
+                        const VkAllocationCallbacks* pAllocator) {
+  MockDevice* mock_device = reinterpret_cast<MockDevice*>(device);
+  mock_device->AddCalledFunction("vkDestroyQueryPool");
+  delete reinterpret_cast<MockQueryPool*>(queryPool);
 }
 
 VkResult vkGetQueryPoolResults(VkDevice device,
@@ -552,6 +600,14 @@ VkResult vkCreateDescriptorPool(VkDevice device,
   return VK_SUCCESS;
 }
 
+void vkDestroyDescriptorPool(VkDevice device,
+                             VkDescriptorPool descriptorPool,
+                             const VkAllocationCallbacks* pAllocator) {
+  MockDevice* mock_device = reinterpret_cast<MockDevice*>(device);
+  mock_device->AddCalledFunction("vkDestroyDescriptorPool");
+  delete reinterpret_cast<MockDescriptorPool*>(descriptorPool);
+}
+
 VkResult vkResetDescriptorPool(VkDevice device,
                                VkDescriptorPool descriptorPool,
                                VkDescriptorPoolResetFlags flags) {
@@ -569,116 +625,283 @@ VkResult vkAllocateDescriptorSets(
   return VK_SUCCESS;
 }
 
+VkResult vkGetPhysicalDeviceSurfaceFormatsKHR(
+    VkPhysicalDevice physicalDevice,
+    VkSurfaceKHR surface,
+    uint32_t* pSurfaceFormatCount,
+    VkSurfaceFormatKHR* pSurfaceFormats) {
+  *pSurfaceFormatCount = 1u;
+  if (pSurfaceFormats != nullptr) {
+    pSurfaceFormats[0] =
+        VkSurfaceFormatKHR{.format = VK_FORMAT_R8G8B8A8_UNORM,
+                           .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+  }
+  return VK_SUCCESS;
+}
+
+VkResult vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+    VkPhysicalDevice physicalDevice,
+    VkSurfaceKHR surface,
+    VkSurfaceCapabilitiesKHR* pSurfaceCapabilities) {
+  *pSurfaceCapabilities = VkSurfaceCapabilitiesKHR{
+      .minImageCount = 3,
+      .maxImageCount = 6,
+      .currentExtent =
+          VkExtent2D{
+              .width = static_cast<uint32_t>(currentImageSize.width),
+              .height = static_cast<uint32_t>(currentImageSize.height),
+          },
+      .minImageExtent =
+          VkExtent2D{
+              .width = 0,
+              .height = 0,
+          },
+      .maxImageExtent =
+          VkExtent2D{
+              .width = static_cast<uint32_t>(currentImageSize.width),
+              .height = static_cast<uint32_t>(currentImageSize.height),
+          },
+      .maxImageArrayLayers = 1,
+      .supportedTransforms =
+          VkSurfaceTransformFlagBitsKHR::VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+      .currentTransform =
+          VkSurfaceTransformFlagBitsKHR::VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+      .supportedCompositeAlpha = VkCompositeAlphaFlagBitsKHR::
+          VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+      .supportedUsageFlags =
+          VkImageUsageFlagBits::VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+  return VK_SUCCESS;
+}
+
+VkResult vkGetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice physicalDevice,
+                                              uint32_t queueFamilyIndex,
+                                              VkSurfaceKHR surface,
+                                              VkBool32* pSupported) {
+  *pSupported = VK_TRUE;
+  return VK_SUCCESS;
+}
+
+VkResult vkCreateSwapchainKHR(VkDevice device,
+                              const VkSwapchainCreateInfoKHR* pCreateInfo,
+                              const VkAllocationCallbacks* pAllocator,
+                              VkSwapchainKHR* pSwapchain) {
+  *pSwapchain = reinterpret_cast<VkSwapchainKHR>(new MockSwapchainKHR());
+  return VK_SUCCESS;
+}
+
+void vkDestroySwapchainKHR(VkDevice device,
+                           VkSwapchainKHR swapchain,
+                           const VkAllocationCallbacks* pAllocator) {
+  delete reinterpret_cast<MockSwapchainKHR*>(swapchain);
+}
+
+VkResult vkGetSwapchainImagesKHR(VkDevice device,
+                                 VkSwapchainKHR swapchain,
+                                 uint32_t* pSwapchainImageCount,
+                                 VkImage* pSwapchainImages) {
+  MockSwapchainKHR* mock_swapchain =
+      reinterpret_cast<MockSwapchainKHR*>(swapchain);
+  auto& images = mock_swapchain->images;
+  *pSwapchainImageCount = images.size();
+  if (pSwapchainImages != nullptr) {
+    for (size_t i = 0; i < images.size(); i++) {
+      pSwapchainImages[i] = reinterpret_cast<VkImage>(&images[i]);
+    }
+  }
+  return VK_SUCCESS;
+}
+
+VkResult vkCreateSemaphore(VkDevice device,
+                           const VkSemaphoreCreateInfo* pCreateInfo,
+                           const VkAllocationCallbacks* pAllocator,
+                           VkSemaphore* pSemaphore) {
+  *pSemaphore = reinterpret_cast<VkSemaphore>(new MockSemaphore());
+  return VK_SUCCESS;
+}
+
+void vkDestroySemaphore(VkDevice device,
+                        VkSemaphore semaphore,
+                        const VkAllocationCallbacks* pAllocator) {
+  delete reinterpret_cast<MockSemaphore*>(semaphore);
+}
+
+VkResult vkAcquireNextImageKHR(VkDevice device,
+                               VkSwapchainKHR swapchain,
+                               uint64_t timeout,
+                               VkSemaphore semaphore,
+                               VkFence fence,
+                               uint32_t* pImageIndex) {
+  auto current_index =
+      reinterpret_cast<MockSwapchainKHR*>(swapchain)->current_image++;
+  *pImageIndex = (current_index + 1) % 3u;
+  return VK_SUCCESS;
+}
+
+VkResult vkCreateFramebuffer(VkDevice device,
+                             const VkFramebufferCreateInfo* pCreateInfo,
+                             const VkAllocationCallbacks* pAllocator,
+                             VkFramebuffer* pFramebuffer) {
+  *pFramebuffer = reinterpret_cast<VkFramebuffer>(new MockFramebuffer());
+  return VK_SUCCESS;
+}
+
+void vkDestroyFramebuffer(VkDevice device,
+                          VkFramebuffer framebuffer,
+                          const VkAllocationCallbacks* pAllocator) {
+  delete reinterpret_cast<MockFramebuffer*>(framebuffer);
+}
+
 PFN_vkVoidFunction GetMockVulkanProcAddress(VkInstance instance,
                                             const char* pName) {
   if (strcmp("vkEnumerateInstanceExtensionProperties", pName) == 0) {
-    return (PFN_vkVoidFunction)vkEnumerateInstanceExtensionProperties;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkEnumerateInstanceExtensionProperties);
   } else if (strcmp("vkEnumerateInstanceLayerProperties", pName) == 0) {
-    return (PFN_vkVoidFunction)vkEnumerateInstanceLayerProperties;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkEnumerateInstanceLayerProperties);
   } else if (strcmp("vkEnumeratePhysicalDevices", pName) == 0) {
-    return (PFN_vkVoidFunction)vkEnumeratePhysicalDevices;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkEnumeratePhysicalDevices);
   } else if (strcmp("vkGetPhysicalDeviceFormatProperties", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetPhysicalDeviceFormatProperties;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetPhysicalDeviceFormatProperties);
   } else if (strcmp("vkGetPhysicalDeviceProperties", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetPhysicalDeviceProperties;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkGetPhysicalDeviceProperties);
   } else if (strcmp("vkGetPhysicalDeviceQueueFamilyProperties", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetPhysicalDeviceQueueFamilyProperties;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetPhysicalDeviceQueueFamilyProperties);
   } else if (strcmp("vkEnumerateDeviceExtensionProperties", pName) == 0) {
-    return (PFN_vkVoidFunction)vkEnumerateDeviceExtensionProperties;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkEnumerateDeviceExtensionProperties);
   } else if (strcmp("vkCreateDevice", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateDevice;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateDevice);
   } else if (strcmp("vkCreateInstance", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateInstance;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateInstance);
   } else if (strcmp("vkGetPhysicalDeviceMemoryProperties", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetPhysicalDeviceMemoryProperties;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetPhysicalDeviceMemoryProperties);
   } else if (strcmp("vkCreatePipelineCache", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreatePipelineCache;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreatePipelineCache);
   } else if (strcmp("vkCreateCommandPool", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateCommandPool;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateCommandPool);
   } else if (strcmp("vkResetCommandPool", pName) == 0) {
-    return (PFN_vkVoidFunction)vkResetCommandPool;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkResetCommandPool);
   } else if (strcmp("vkAllocateCommandBuffers", pName) == 0) {
-    return (PFN_vkVoidFunction)vkAllocateCommandBuffers;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkAllocateCommandBuffers);
   } else if (strcmp("vkBeginCommandBuffer", pName) == 0) {
-    return (PFN_vkVoidFunction)vkBeginCommandBuffer;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkBeginCommandBuffer);
   } else if (strcmp("vkCreateImage", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateImage;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateImage);
   } else if (strcmp("vkGetInstanceProcAddr", pName) == 0) {
-    return (PFN_vkVoidFunction)GetMockVulkanProcAddress;
+    return reinterpret_cast<PFN_vkVoidFunction>(GetMockVulkanProcAddress);
   } else if (strcmp("vkGetDeviceProcAddr", pName) == 0) {
-    return (PFN_vkVoidFunction)GetMockVulkanProcAddress;
+    return reinterpret_cast<PFN_vkVoidFunction>(GetMockVulkanProcAddress);
   } else if (strcmp("vkGetImageMemoryRequirements2KHR", pName) == 0 ||
              strcmp("vkGetImageMemoryRequirements2", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetImageMemoryRequirements2KHR;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetImageMemoryRequirements2KHR);
   } else if (strcmp("vkAllocateMemory", pName) == 0) {
-    return (PFN_vkVoidFunction)vkAllocateMemory;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkAllocateMemory);
   } else if (strcmp("vkBindImageMemory", pName) == 0) {
-    return (PFN_vkVoidFunction)vkBindImageMemory;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkBindImageMemory);
   } else if (strcmp("vkCreateImageView", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateImageView;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateImageView);
   } else if (strcmp("vkCreateBuffer", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateBuffer;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateBuffer);
   } else if (strcmp("vkGetBufferMemoryRequirements2KHR", pName) == 0 ||
              strcmp("vkGetBufferMemoryRequirements2", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetBufferMemoryRequirements2KHR;
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetBufferMemoryRequirements2KHR);
   } else if (strcmp("vkBindBufferMemory", pName) == 0) {
-    return (PFN_vkVoidFunction)vkBindBufferMemory;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkBindBufferMemory);
   } else if (strcmp("vkCreateRenderPass", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateRenderPass;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateRenderPass);
   } else if (strcmp("vkCreateDescriptorSetLayout", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateDescriptorSetLayout;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateDescriptorSetLayout);
   } else if (strcmp("vkCreatePipelineLayout", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreatePipelineLayout;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreatePipelineLayout);
   } else if (strcmp("vkCreateGraphicsPipelines", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateGraphicsPipelines;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateGraphicsPipelines);
   } else if (strcmp("vkDestroyDevice", pName) == 0) {
-    return (PFN_vkVoidFunction)vkDestroyDevice;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyDevice);
   } else if (strcmp("vkDestroyPipeline", pName) == 0) {
-    return (PFN_vkVoidFunction)vkDestroyPipeline;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyPipeline);
   } else if (strcmp("vkCreateShaderModule", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateShaderModule;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateShaderModule);
   } else if (strcmp("vkDestroyShaderModule", pName) == 0) {
-    return (PFN_vkVoidFunction)vkDestroyShaderModule;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyShaderModule);
   } else if (strcmp("vkDestroyPipelineCache", pName) == 0) {
-    return (PFN_vkVoidFunction)vkDestroyPipelineCache;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyPipelineCache);
   } else if (strcmp("vkCmdBindPipeline", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCmdBindPipeline;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCmdBindPipeline);
   } else if (strcmp("vkCmdSetStencilReference", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCmdSetStencilReference;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCmdSetStencilReference);
   } else if (strcmp("vkCmdSetScissor", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCmdSetScissor;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCmdSetScissor);
   } else if (strcmp("vkCmdSetViewport", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCmdSetViewport;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCmdSetViewport);
   } else if (strcmp("vkDestroyCommandPool", pName) == 0) {
-    return (PFN_vkVoidFunction)vkDestroyCommandPool;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyCommandPool);
   } else if (strcmp("vkFreeCommandBuffers", pName) == 0) {
-    return (PFN_vkVoidFunction)vkFreeCommandBuffers;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkFreeCommandBuffers);
   } else if (strcmp("vkEndCommandBuffer", pName) == 0) {
-    return (PFN_vkVoidFunction)vkEndCommandBuffer;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkEndCommandBuffer);
   } else if (strcmp("vkCreateFence", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateFence;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateFence);
   } else if (strcmp("vkDestroyFence", pName) == 0) {
-    return (PFN_vkVoidFunction)vkDestroyFence;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyFence);
   } else if (strcmp("vkQueueSubmit", pName) == 0) {
-    return (PFN_vkVoidFunction)vkQueueSubmit;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkQueueSubmit);
   } else if (strcmp("vkWaitForFences", pName) == 0) {
-    return (PFN_vkVoidFunction)vkWaitForFences;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkWaitForFences);
   } else if (strcmp("vkGetFenceStatus", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetFenceStatus;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkGetFenceStatus);
+  } else if (strcmp("vkResetFences", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkResetFences);
   } else if (strcmp("vkCreateDebugUtilsMessengerEXT", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateDebugUtilsMessengerEXT;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateDebugUtilsMessengerEXT);
   } else if (strcmp("vkSetDebugUtilsObjectNameEXT", pName) == 0) {
-    return (PFN_vkVoidFunction)vkSetDebugUtilsObjectNameEXT;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkSetDebugUtilsObjectNameEXT);
   } else if (strcmp("vkCreateQueryPool", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateQueryPool;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateQueryPool);
+  } else if (strcmp("vkDestroyQueryPool", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyQueryPool);
   } else if (strcmp("vkGetQueryPoolResults", pName) == 0) {
-    return (PFN_vkVoidFunction)vkGetQueryPoolResults;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkGetQueryPoolResults);
   } else if (strcmp("vkCreateDescriptorPool", pName) == 0) {
-    return (PFN_vkVoidFunction)vkCreateDescriptorPool;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateDescriptorPool);
+  } else if (strcmp("vkDestroyDescriptorPool", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyDescriptorPool);
   } else if (strcmp("vkResetDescriptorPool", pName) == 0) {
-    return (PFN_vkVoidFunction)vkResetDescriptorPool;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkResetDescriptorPool);
   } else if (strcmp("vkAllocateDescriptorSets", pName) == 0) {
-    return (PFN_vkVoidFunction)vkAllocateDescriptorSets;
+    return reinterpret_cast<PFN_vkVoidFunction>(vkAllocateDescriptorSets);
+  } else if (strcmp("vkGetPhysicalDeviceSurfaceFormatsKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetPhysicalDeviceSurfaceFormatsKHR);
+  } else if (strcmp("vkGetPhysicalDeviceSurfaceCapabilitiesKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
+  } else if (strcmp("vkGetPhysicalDeviceSurfaceSupportKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        vkGetPhysicalDeviceSurfaceSupportKHR);
+  } else if (strcmp("vkCreateSwapchainKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateSwapchainKHR);
+  } else if (strcmp("vkDestroySwapchainKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroySwapchainKHR);
+  } else if (strcmp("vkGetSwapchainImagesKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkGetSwapchainImagesKHR);
+  } else if (strcmp("vkCreateSemaphore", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateSemaphore);
+  } else if (strcmp("vkDestroySemaphore", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroySemaphore);
+  } else if (strcmp("vkDestroySurfaceKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroySurfaceKHR);
+  } else if (strcmp("vkAcquireNextImageKHR", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkAcquireNextImageKHR);
+  } else if (strcmp("vkCreateFramebuffer", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkCreateFramebuffer);
+  } else if (strcmp("vkDestroyFramebuffer", pName) == 0) {
+    return reinterpret_cast<PFN_vkVoidFunction>(vkDestroyFramebuffer);
   }
   return noop;
 }
@@ -686,7 +909,24 @@ PFN_vkVoidFunction GetMockVulkanProcAddress(VkInstance instance,
 }  // namespace
 
 MockVulkanContextBuilder::MockVulkanContextBuilder()
-    : instance_extensions_({"VK_KHR_surface", "VK_MVK_macos_surface"}) {}
+    : instance_extensions_({"VK_KHR_surface", "VK_MVK_macos_surface"}),
+      format_properties_callback_([](VkPhysicalDevice physicalDevice,
+                                     VkFormat format,
+                                     VkFormatProperties* pFormatProperties) {
+        if (format == VK_FORMAT_R8G8B8A8_UNORM) {
+          pFormatProperties->optimalTilingFeatures =
+              static_cast<VkFormatFeatureFlags>(
+                  vk::FormatFeatureFlagBits::eColorAttachment);
+        } else if (format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+          pFormatProperties->optimalTilingFeatures =
+              static_cast<VkFormatFeatureFlags>(
+                  vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+        } else if (format == VK_FORMAT_S8_UINT) {
+          pFormatProperties->optimalTilingFeatures =
+              static_cast<VkFormatFeatureFlags>(
+                  vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+        }
+      }) {}
 
 std::shared_ptr<ContextVK> MockVulkanContextBuilder::Build() {
   auto message_loop = fml::ConcurrentMessageLoop::Create();
@@ -697,6 +937,9 @@ std::shared_ptr<ContextVK> MockVulkanContextBuilder::Build() {
   }
   g_instance_extensions = instance_extensions_;
   g_instance_layers = instance_layers_;
+  g_format_properties_callback = format_properties_callback_;
+  g_physical_device_properties_callback = physical_properties_callback_;
+  settings.embedder_data = embedder_data_;
   std::shared_ptr<ContextVK> result = ContextVK::Create(std::move(settings));
   return result;
 }
@@ -705,6 +948,10 @@ std::shared_ptr<std::vector<std::string>> GetMockVulkanFunctions(
     VkDevice device) {
   MockDevice* mock_device = reinterpret_cast<MockDevice*>(device);
   return mock_device->GetCalledFunctions();
+}
+
+void SetSwapchainImageSize(ISize size) {
+  currentImageSize = size;
 }
 
 }  // namespace testing

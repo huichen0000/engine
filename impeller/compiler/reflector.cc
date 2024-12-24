@@ -258,6 +258,18 @@ std::optional<nlohmann::json> Reflector::GenerateTemplateArguments() const {
     std::set<spirv_cross::ID> known_structs;
     ir_->for_each_typed_id<spirv_cross::SPIRType>(
         [&](uint32_t, const spirv_cross::SPIRType& type) {
+          if (type.basetype != spirv_cross::SPIRType::BaseType::Struct) {
+            return;
+          }
+          // Skip structs that do not have layout offset decorations.
+          // These structs are used internally within the shader and are not
+          // part of the shader's interface.
+          for (size_t i = 0; i < type.member_types.size(); i++) {
+            if (!compiler_->has_member_decoration(type.self, i,
+                                                  spv::DecorationOffset)) {
+              return;
+            }
+          }
           if (known_structs.find(type.self) != known_structs.end()) {
             // Iterating over types this way leads to duplicates which may cause
             // duplicate struct definitions.
@@ -300,6 +312,8 @@ static std::optional<RuntimeStageBackend> GetRuntimeStageBackend(
       return RuntimeStageBackend::kMetal;
     case TargetPlatform::kRuntimeStageGLES:
       return RuntimeStageBackend::kOpenGLES;
+    case TargetPlatform::kRuntimeStageGLES3:
+      return RuntimeStageBackend::kOpenGLES3;
     case TargetPlatform::kRuntimeStageVulkan:
       return RuntimeStageBackend::kVulkan;
     case TargetPlatform::kSkSL:
@@ -336,6 +350,8 @@ std::shared_ptr<RuntimeStageData::Shader> Reflector::GenerateRuntimeStageData()
     uniform_description.name = compiler_->get_name(var.self);
     uniform_description.location = compiler_->get_decoration(
         var.self, spv::Decoration::DecorationLocation);
+    uniform_description.binding =
+        compiler_->get_decoration(var.self, spv::Decoration::DecorationBinding);
     uniform_description.type = spir_type.basetype;
     uniform_description.rows = spir_type.vecsize;
     uniform_description.columns = spir_type.columns;
@@ -362,6 +378,8 @@ std::shared_ptr<RuntimeStageData::Shader> Reflector::GenerateRuntimeStageData()
 
     const auto& ubo = ubos[0];
 
+    size_t binding =
+        compiler_->get_decoration(ubo.id, spv::Decoration::DecorationBinding);
     auto members = ReadStructMembers(ubo.type_id);
     std::vector<uint8_t> struct_layout;
     size_t float_count = 0;
@@ -396,8 +414,8 @@ std::shared_ptr<RuntimeStageData::Shader> Reflector::GenerateRuntimeStageData()
     }
     data->uniforms.emplace_back(UniformDescription{
         .name = ubo.name,
-        .location = 64,  // Magic constant that must match the descriptor set
-                         // location for fragment programs.
+        .location = binding,
+        .binding = binding,
         .type = spirv_cross::SPIRType::Struct,
         .struct_layout = std::move(struct_layout),
         .struct_float_count = float_count,
@@ -409,9 +427,7 @@ std::shared_ptr<RuntimeStageData::Shader> Reflector::GenerateRuntimeStageData()
     const auto inputs = compiler_->get_shader_resources().stage_inputs;
     auto input_offsets = ComputeOffsets(inputs);
     for (const auto& input : inputs) {
-      auto location = compiler_->get_decoration(
-          input.id, spv::Decoration::DecorationLocation);
-      std::optional<size_t> offset = input_offsets[location];
+      std::optional<size_t> offset = GetOffset(input.id, input_offsets);
 
       const auto type = compiler_->get_type(input.type_id);
 
@@ -506,9 +522,7 @@ std::shared_ptr<ShaderBundleData> Reflector::GenerateShaderBundleData() const {
     const auto inputs = compiler_->get_shader_resources().stage_inputs;
     auto input_offsets = ComputeOffsets(inputs);
     for (const auto& input : inputs) {
-      auto location = compiler_->get_decoration(
-          input.id, spv::Decoration::DecorationLocation);
-      std::optional<size_t> offset = input_offsets[location];
+      std::optional<size_t> offset = GetOffset(input.id, input_offsets);
 
       const auto type = compiler_->get_type(input.type_id);
 
@@ -612,6 +626,17 @@ std::vector<size_t> Reflector::ComputeOffsets(
   return offsets;
 }
 
+std::optional<size_t> Reflector::GetOffset(
+    spirv_cross::ID id,
+    const std::vector<size_t>& offsets) const {
+  uint32_t location =
+      compiler_->get_decoration(id, spv::Decoration::DecorationLocation);
+  if (location >= offsets.size()) {
+    return std::nullopt;
+  }
+  return offsets[location];
+}
+
 std::optional<nlohmann::json::object_t> Reflector::ReflectResource(
     const spirv_cross::Resource& resource,
     std::optional<size_t> offset) const {
@@ -632,12 +657,15 @@ std::optional<nlohmann::json::object_t> Reflector::ReflectResource(
       CompilerBackend::ExtendedResourceIndex::kPrimary, resource.id);
   result["ext_res_1"] = compiler_.GetExtendedMSLResourceBinding(
       CompilerBackend::ExtendedResourceIndex::kSecondary, resource.id);
+  result["relaxed_precision"] =
+      compiler_->get_decoration(
+          resource.id, spv::Decoration::DecorationRelaxedPrecision) == 1;
+  result["offset"] = offset.value_or(0u);
   auto type = ReflectType(resource.type_id);
   if (!type.has_value()) {
     return std::nullopt;
   }
   result["type"] = std::move(type.value());
-  result["offset"] = offset.value_or(0u);
   return result;
 }
 
@@ -686,9 +714,7 @@ std::optional<nlohmann::json::array_t> Reflector::ReflectResources(
   for (const auto& resource : resources) {
     std::optional<size_t> maybe_offset = std::nullopt;
     if (compute_offsets) {
-      auto location = compiler_->get_decoration(
-          resource.id, spv::Decoration::DecorationLocation);
-      maybe_offset = offsets[location];
+      maybe_offset = GetOffset(resource.id, offsets);
     }
     if (auto reflected = ReflectResource(resource, maybe_offset);
         reflected.has_value()) {
@@ -1308,6 +1334,7 @@ std::vector<Reflector::BindPrototype> Reflector::ReflectBindPrototypes(
     auto& proto = prototypes.emplace_back(BindPrototype{});
     proto.return_type = "bool";
     proto.name = ToCamelCase(uniform_buffer.name);
+    proto.descriptor_type = "DescriptorType::kUniformBuffer";
     {
       std::stringstream stream;
       stream << "Bind uniform buffer for resource named " << uniform_buffer.name
@@ -1327,6 +1354,7 @@ std::vector<Reflector::BindPrototype> Reflector::ReflectBindPrototypes(
     auto& proto = prototypes.emplace_back(BindPrototype{});
     proto.return_type = "bool";
     proto.name = ToCamelCase(storage_buffer.name);
+    proto.descriptor_type = "DescriptorType::kStorageBuffer";
     {
       std::stringstream stream;
       stream << "Bind storage buffer for resource named " << storage_buffer.name
@@ -1346,6 +1374,7 @@ std::vector<Reflector::BindPrototype> Reflector::ReflectBindPrototypes(
     auto& proto = prototypes.emplace_back(BindPrototype{});
     proto.return_type = "bool";
     proto.name = ToCamelCase(sampled_image.name);
+    proto.descriptor_type = "DescriptorType::kSampledImage";
     {
       std::stringstream stream;
       stream << "Bind combined image sampler for resource named "
@@ -1361,7 +1390,7 @@ std::vector<Reflector::BindPrototype> Reflector::ReflectBindPrototypes(
         .argument_name = "texture",
     });
     proto.args.push_back(BindPrototypeArgument{
-        .type_name = "std::shared_ptr<const Sampler>",
+        .type_name = "raw_ptr<const Sampler>",
         .argument_name = "sampler",
     });
   }
@@ -1369,6 +1398,7 @@ std::vector<Reflector::BindPrototype> Reflector::ReflectBindPrototypes(
     auto& proto = prototypes.emplace_back(BindPrototype{});
     proto.return_type = "bool";
     proto.name = ToCamelCase(separate_image.name);
+    proto.descriptor_type = "DescriptorType::kImage";
     {
       std::stringstream stream;
       stream << "Bind separate image for resource named " << separate_image.name
@@ -1388,6 +1418,7 @@ std::vector<Reflector::BindPrototype> Reflector::ReflectBindPrototypes(
     auto& proto = prototypes.emplace_back(BindPrototype{});
     proto.return_type = "bool";
     proto.name = ToCamelCase(separate_sampler.name);
+    proto.descriptor_type = "DescriptorType::kSampler";
     {
       std::stringstream stream;
       stream << "Bind separate sampler for resource named "
@@ -1416,6 +1447,7 @@ nlohmann::json::array_t Reflector::EmitBindPrototypes(
     item["return_type"] = res.return_type;
     item["name"] = res.name;
     item["docstring"] = res.docstring;
+    item["descriptor_type"] = res.descriptor_type;
     auto& args = item["args"] = nlohmann::json::array_t{};
     for (const auto& arg : res.args) {
       auto& json_arg = args.emplace_back(nlohmann::json::object_t{});

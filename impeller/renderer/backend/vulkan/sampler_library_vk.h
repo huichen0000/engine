@@ -6,8 +6,9 @@
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_VULKAN_SAMPLER_LIBRARY_VK_H_
 
 #include "impeller/base/backend_cast.h"
+#include "impeller/core/sampler.h"
 #include "impeller/core/sampler_descriptor.h"
-#include "impeller/renderer/backend/vulkan/device_holder.h"
+#include "impeller/renderer/backend/vulkan/device_holder_vk.h"
 #include "impeller/renderer/sampler_library.h"
 
 namespace impeller {
@@ -22,14 +23,14 @@ class SamplerLibraryVK final
  private:
   friend class ContextVK;
 
-  std::weak_ptr<DeviceHolder> device_holder_;
-  SamplerMap samplers_;
+  std::weak_ptr<DeviceHolderVK> device_holder_;
+  std::vector<std::pair<uint64_t, std::shared_ptr<const Sampler>>> samplers_;
 
-  explicit SamplerLibraryVK(const std::weak_ptr<DeviceHolder>& device_holder);
+  explicit SamplerLibraryVK(const std::weak_ptr<DeviceHolderVK>& device_holder);
 
   // |SamplerLibrary|
-  std::shared_ptr<const Sampler> GetSampler(
-      SamplerDescriptor descriptor) override;
+  raw_ptr<const Sampler> GetSampler(
+      const SamplerDescriptor& descriptor) override;
 
   SamplerLibraryVK(const SamplerLibraryVK&) = delete;
 

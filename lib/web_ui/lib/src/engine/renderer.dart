@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 import 'dart:async';
+import 'dart:js_interop';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:ui/src/engine.dart';
-import 'package:ui/src/engine/skwasm/skwasm_stub.dart' if (dart.library.ffi) 'package:ui/src/engine/skwasm/skwasm_impl.dart';
+import 'package:ui/src/engine/skwasm/skwasm_impl.dart'
+    if (dart.library.html) 'package:ui/src/engine/skwasm/skwasm_stub.dart';
 import 'package:ui/ui.dart' as ui;
 import 'package:ui/ui_web/src/ui_web.dart' as ui_web;
 
@@ -37,6 +39,20 @@ abstract class Renderer {
         useCanvasKit = FlutterConfiguration.useSkia;
       }
 
+      // Warn users in development that anything other than canvaskit is deprecated.
+      assert(() {
+        if (!useCanvasKit) {
+          // The user requested 'html' or 'auto' either in the command-line or JS.
+          final String requested =
+              configuration.requestedRendererType ??
+              (FlutterConfiguration.flutterWebAutoDetect ? 'auto' : 'html');
+          printWarning(
+            'The HTML Renderer is being deprecated. Stop using the "$requested" renderer mode.'
+            '\nSee: https://docs.flutter.dev/to/web-html-renderer-deprecation',
+          );
+        }
+        return true;
+      }());
       return useCanvasKit ? CanvasKitRenderer() : HtmlRenderer();
     }
   }
@@ -45,7 +61,6 @@ abstract class Renderer {
   FlutterFontCollection get fontCollection;
 
   FutureOr<void> initialize();
-  void reset(FlutterViewEmbedder embedder);
 
   ui.Paint createPaint();
 
@@ -107,14 +122,18 @@ abstract class Renderer {
   ui.ImageFilter createBlurImageFilter({
     double sigmaX = 0.0,
     double sigmaY = 0.0,
-    ui.TileMode tileMode = ui.TileMode.clamp});
-  ui.ImageFilter createDilateImageFilter({ double radiusX = 0.0, double radiusY = 0.0});
-  ui.ImageFilter createErodeImageFilter({ double radiusX = 0.0, double radiusY = 0.0});
+    ui.TileMode? tileMode,
+  });
+  ui.ImageFilter createDilateImageFilter({double radiusX = 0.0, double radiusY = 0.0});
+  ui.ImageFilter createErodeImageFilter({double radiusX = 0.0, double radiusY = 0.0});
   ui.ImageFilter createMatrixImageFilter(
     Float64List matrix4, {
-    ui.FilterQuality filterQuality = ui.FilterQuality.low
+    ui.FilterQuality filterQuality = ui.FilterQuality.low,
   });
-  ui.ImageFilter composeImageFilters({required ui.ImageFilter outer, required ui.ImageFilter inner});
+  ui.ImageFilter composeImageFilters({
+    required ui.ImageFilter outer,
+    required ui.ImageFilter inner,
+  });
 
   Future<ui.Codec> instantiateImageCodec(
     Uint8List list, {
@@ -130,6 +149,13 @@ abstract class Renderer {
 
   FutureOr<ui.Image> createImageFromImageBitmap(DomImageBitmap imageSource);
 
+  FutureOr<ui.Image> createImageFromTextureSource(
+    JSAny object, {
+    required int width,
+    required int height,
+    required bool transferOwnership,
+  });
+
   void decodeImageFromPixels(
     Uint8List pixels,
     int width,
@@ -139,7 +165,7 @@ abstract class Renderer {
     int? rowBytes,
     int? targetWidth,
     int? targetHeight,
-    bool allowUpscaling = true
+    bool allowUpscaling = true,
   });
 
   ui.ImageShader createImageShader(
@@ -222,5 +248,5 @@ abstract class Renderer {
 
   ui.ParagraphBuilder createParagraphBuilder(ui.ParagraphStyle style);
 
-  Future<void> renderScene(ui.Scene scene, ui.FlutterView view);
+  Future<void> renderScene(ui.Scene scene, EngineFlutterView view);
 }

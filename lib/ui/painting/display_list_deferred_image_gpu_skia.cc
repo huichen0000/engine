@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#if !SLIMPELLER
+
 #include "flutter/lib/ui/painting/display_list_deferred_image_gpu_skia.h"
 
 #include "flutter/fml/make_copyable.h"
@@ -180,7 +182,7 @@ void DlDeferredImageGPUSkia::ImageWrapper::SnapshotDisplayList(
         }
         if (layer_tree) {
           auto display_list =
-              layer_tree->Flatten(SkRect::MakeWH(wrapper->image_info_.width(),
+              layer_tree->Flatten(DlRect::MakeWH(wrapper->image_info_.width(),
                                                  wrapper->image_info_.height()),
                                   snapshot_delegate->GetTextureRegistry(),
                                   snapshot_delegate->GetGrContext());
@@ -226,3 +228,5 @@ void DlDeferredImageGPUSkia::ImageWrapper::DeleteTexture() {
 }
 
 }  // namespace flutter
+
+#endif  //  !SLIMPELLER

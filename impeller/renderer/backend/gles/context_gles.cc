@@ -7,8 +7,14 @@
 
 #include "impeller/base/config.h"
 #include "impeller/base/validation.h"
+#include "impeller/base/version.h"
+#include "impeller/core/runtime_types.h"
 #include "impeller/renderer/backend/gles/command_buffer_gles.h"
 #include "impeller/renderer/backend/gles/gpu_tracer_gles.h"
+#include "impeller/renderer/backend/gles/handle_gles.h"
+#include "impeller/renderer/backend/gles/render_pass_gles.h"
+#include "impeller/renderer/backend/gles/texture_gles.h"
+#include "impeller/renderer/command_queue.h"
 
 namespace impeller {
 
@@ -67,6 +73,7 @@ ContextGLES::ContextGLES(
   }
   gpu_tracer_ = std::make_shared<GPUTracerGLES>(GetReactor()->GetProcTable(),
                                                 enable_gpu_tracing);
+  command_queue_ = std::make_shared<CommandQueue>();
   is_valid_ = true;
 }
 
@@ -76,7 +83,7 @@ Context::BackendType ContextGLES::GetBackendType() const {
   return Context::BackendType::kOpenGLES;
 }
 
-const ReactorGLES::Ref& ContextGLES::GetReactor() const {
+const std::shared_ptr<ReactorGLES>& ContextGLES::GetReactor() const {
   return reactor_;
 }
 
@@ -136,6 +143,52 @@ std::shared_ptr<CommandBuffer> ContextGLES::CreateCommandBuffer() const {
 const std::shared_ptr<const Capabilities>& ContextGLES::GetCapabilities()
     const {
   return device_capabilities_;
+}
+
+// |Context|
+std::shared_ptr<CommandQueue> ContextGLES::GetCommandQueue() const {
+  return command_queue_;
+}
+
+// |Context|
+void ContextGLES::ResetThreadLocalState() const {
+  if (!IsValid()) {
+    return;
+  }
+  [[maybe_unused]] auto result =
+      reactor_->AddOperation([](const ReactorGLES& reactor) {
+        RenderPassGLES::ResetGLState(reactor.GetProcTable());
+      });
+}
+
+bool ContextGLES::EnqueueCommandBuffer(
+    std::shared_ptr<CommandBuffer> command_buffer) {
+  return true;
+}
+
+// |Context|
+[[nodiscard]] bool ContextGLES::FlushCommandBuffers() {
+  return reactor_->React();
+}
+
+// |Context|
+bool ContextGLES::AddTrackingFence(
+    const std::shared_ptr<Texture>& texture) const {
+  if (!reactor_->GetProcTable().FenceSync.IsAvailable()) {
+    return false;
+  }
+  HandleGLES fence = reactor_->CreateHandle(HandleType::kFence);
+  TextureGLES::Cast(*texture).SetFence(fence);
+  return true;
+}
+
+// |Context|
+RuntimeStageBackend ContextGLES::GetRuntimeStageBackend() const {
+  if (GetReactor()->GetProcTable().GetDescription()->GetGlVersion().IsAtLeast(
+          Version{3, 0, 0})) {
+    return RuntimeStageBackend::kOpenGLES3;
+  }
+  return RuntimeStageBackend::kOpenGLES;
 }
 
 }  // namespace impeller

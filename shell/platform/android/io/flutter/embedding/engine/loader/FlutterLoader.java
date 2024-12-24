@@ -10,13 +10,11 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.hardware.display.DisplayManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.DisplayMetrics;
-import android.view.WindowManager;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import io.flutter.BuildConfig;
@@ -47,6 +45,12 @@ public class FlutterLoader {
       "io.flutter.embedding.android.ImpellerBackend";
   private static final String IMPELLER_OPENGL_GPU_TRACING_DATA_KEY =
       "io.flutter.embedding.android.EnableOpenGLGPUTracing";
+  private static final String IMPELLER_VULKAN_GPU_TRACING_DATA_KEY =
+      "io.flutter.embedding.android.EnableVulkanGPUTracing";
+  private static final String DISABLE_MERGED_PLATFORM_UI_THREAD_KEY =
+      "io.flutter.embedding.android.DisableMergedPlatformUIThread";
+  private static final String DISABLE_SURFACE_CONTROL =
+      "io.flutter.embedding.android.DisableSurfaceControl";
 
   /**
    * Set whether leave or clean up the VM after the last shell shuts down. It can be set from app's
@@ -166,18 +170,9 @@ public class FlutterLoader {
       initStartTimestampMillis = SystemClock.uptimeMillis();
       flutterApplicationInfo = ApplicationInfoLoader.load(appContext);
 
-      VsyncWaiter waiter;
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 /* 17 */) {
-        final DisplayManager dm =
-            (DisplayManager) appContext.getSystemService(Context.DISPLAY_SERVICE);
-        waiter = VsyncWaiter.getInstance(dm, flutterJNI);
-      } else {
-        float fps =
-            ((WindowManager) appContext.getSystemService(Context.WINDOW_SERVICE))
-                .getDefaultDisplay()
-                .getRefreshRate();
-        waiter = VsyncWaiter.getInstance(fps, flutterJNI);
-      }
+      final DisplayManager dm =
+          (DisplayManager) appContext.getSystemService(Context.DISPLAY_SERVICE);
+      VsyncWaiter waiter = VsyncWaiter.getInstance(dm, flutterJNI);
       waiter.init();
 
       // Use a background thread for initialization tasks that require disk access.
@@ -188,7 +183,43 @@ public class FlutterLoader {
               try (TraceSection e = TraceSection.scoped("FlutterLoader initTask")) {
                 ResourceExtractor resourceExtractor = initResources(appContext);
 
-                flutterJNI.loadLibrary();
+                try {
+                  flutterJNI.loadLibrary(appContext);
+                } catch (UnsatisfiedLinkError unsatisfiedLinkError) {
+                  String couldntFindVersion = "couldn't find \"libflutter.so\"";
+                  String notFoundVersion = "dlopen failed: library \"libflutter.so\" not found";
+
+                  if (unsatisfiedLinkError.toString().contains(couldntFindVersion)
+                      || unsatisfiedLinkError.toString().contains(notFoundVersion)) {
+                    // To gather more information for
+                    // https://github.com/flutter/flutter/issues/144291,
+                    // log the contents of the native libraries directory as well as the
+                    // cpu architecture.
+
+                    String cpuArch = System.getProperty("os.arch");
+                    File nativeLibsDir = new File(flutterApplicationInfo.nativeLibraryDir);
+                    String[] nativeLibsContents = nativeLibsDir.list();
+
+                    throw new UnsupportedOperationException(
+                        "Could not load libflutter.so this is possibly because the application"
+                            + " is running on an architecture that Flutter Android does not support (e.g. x86)"
+                            + " see https://docs.flutter.dev/deployment/android#what-are-the-supported-target-architectures"
+                            + " for more detail.\n"
+                            + "App is using cpu architecture: "
+                            + cpuArch
+                            + ", and the native libraries directory (with path "
+                            + nativeLibsDir.getAbsolutePath()
+                            + ") "
+                            + (nativeLibsDir.exists()
+                                ? "contains the following files: "
+                                    + Arrays.toString(nativeLibsContents)
+                                : "does not exist."),
+                        unsatisfiedLinkError);
+                  }
+
+                  throw unsatisfiedLinkError;
+                }
+
                 flutterJNI.updateRefreshRate();
 
                 // Prefetch the default font manager as soon as possible on a background thread.
@@ -208,13 +239,6 @@ public class FlutterLoader {
           };
       initResultFuture = executorService.submit(initTask);
     }
-  }
-
-  private static boolean areValidationLayersOnByDefault() {
-    if (BuildConfig.DEBUG && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      return Build.SUPPORTED_ABIS[0].equals("arm64-v8a");
-    }
-    return false;
   }
 
   /**
@@ -323,16 +347,32 @@ public class FlutterLoader {
       shellArgs.add("--prefetched-default-font-manager");
 
       if (metaData != null) {
-        if (metaData.getBoolean(ENABLE_IMPELLER_META_DATA_KEY, false)) {
-          shellArgs.add("--enable-impeller");
+        if (metaData.containsKey(ENABLE_IMPELLER_META_DATA_KEY)) {
+          if (metaData.getBoolean(ENABLE_IMPELLER_META_DATA_KEY)) {
+            shellArgs.add("--enable-impeller=true");
+          } else {
+            shellArgs.add("--enable-impeller=false");
+          }
         }
-        if (metaData.getBoolean(
-            ENABLE_VULKAN_VALIDATION_META_DATA_KEY, areValidationLayersOnByDefault())) {
+        if (metaData.getBoolean(ENABLE_VULKAN_VALIDATION_META_DATA_KEY, false)) {
           shellArgs.add("--enable-vulkan-validation");
         }
         if (metaData.getBoolean(IMPELLER_OPENGL_GPU_TRACING_DATA_KEY, false)) {
           shellArgs.add("--enable-opengl-gpu-tracing");
         }
+        if (metaData.getBoolean(IMPELLER_VULKAN_GPU_TRACING_DATA_KEY, false)) {
+          shellArgs.add("--enable-vulkan-gpu-tracing");
+        }
+        if (metaData.containsKey(DISABLE_MERGED_PLATFORM_UI_THREAD_KEY)) {
+          if (metaData.getBoolean(DISABLE_MERGED_PLATFORM_UI_THREAD_KEY)) {
+            shellArgs.add("--no-enable-merged-platform-ui-thread");
+          }
+        }
+
+        if (metaData.getBoolean(DISABLE_SURFACE_CONTROL, false)) {
+          shellArgs.add("--disable-surface-control");
+        }
+
         String backend = metaData.getString(IMPELLER_BACKEND_META_DATA_KEY);
         if (backend != null) {
           shellArgs.add("--impeller-backend=" + backend);

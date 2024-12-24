@@ -11,7 +11,10 @@ import 'package:ui/ui.dart' as ui;
 import 'package:ui/ui_web/src/ui_web.dart' as ui_web;
 
 import '../common/matchers.dart';
+import '../common/test_initialization.dart';
 import 'history_test.dart';
+
+EngineFlutterWindow get myWindow => EnginePlatformDispatcher.instance.implicitView!;
 
 Map<String, dynamic> _tagStateWithSerialCount(dynamic state, int serialCount) {
   return <String, dynamic> {
@@ -25,20 +28,7 @@ void main() {
 }
 
 void testMain() {
-  late EngineFlutterWindow myWindow;
-
-  final EnginePlatformDispatcher dispatcher = EnginePlatformDispatcher.instance;
-
-  setUp(() {
-    myWindow = EngineFlutterView.implicit(dispatcher, createDomHTMLDivElement());
-    dispatcher.viewManager.registerView(myWindow);
-  });
-
-  tearDown(() async {
-    dispatcher.viewManager.unregisterView(myWindow.viewId);
-    await myWindow.resetHistory();
-    myWindow.dispose();
-  });
+  setUpImplicitView();
 
   // For now, web always has an implicit view provided by the web engine.
   test('EnginePlatformDispatcher.instance.implicitView should be non-null', () async {
@@ -279,13 +269,15 @@ void testMain() {
     await callback.future;
     expect(myWindow.browserHistory, isA<MultiEntriesBrowserHistory>());
     expect(myWindow.browserHistory.urlStrategy!.getPath(), '/baz');
-    final dynamic wrappedState = myWindow.browserHistory.urlStrategy!.getState();
-    final dynamic actualState = wrappedState['state'];
+    final wrappedState = myWindow.browserHistory.urlStrategy!.getState()! as Map<Object?, Object?>;
+    final actualState = wrappedState['state']! as Map<Object?, Object?>;
     expect(actualState['state1'], true);
     expect(actualState['state2'], 1);
     expect(actualState['state3'], 'string');
-    expect(actualState['state4']['substate1'], 1.0);
-    expect(actualState['state4']['substate2'], 'string2');
+
+    final state4 = actualState['state4']! as Map<Object?, Object?>;
+    expect(state4['substate1'], 1.0);
+    expect(state4['substate2'], 'string2');
   });
 
   test('routeInformationUpdated can handle uri',

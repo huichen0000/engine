@@ -5,27 +5,25 @@
 #ifndef FLUTTER_IMPELLER_GOLDEN_TESTS_METAL_SCREENSHOTTER_H_
 #define FLUTTER_IMPELLER_GOLDEN_TESTS_METAL_SCREENSHOTTER_H_
 
-#include "flutter/fml/macros.h"
-#include "flutter/impeller/aiks/picture.h"
 #include "flutter/impeller/golden_tests/metal_screenshot.h"
+#include "flutter/impeller/golden_tests/screenshotter.h"
 #include "flutter/impeller/playground/playground_impl.h"
+#include "impeller/display_list/aiks_context.h"
 
 namespace impeller {
 namespace testing {
 
 /// Converts `Picture`s and `DisplayList`s to `MetalScreenshot`s with the
 /// playground backend.
-class MetalScreenshotter {
+class MetalScreenshotter : public Screenshotter {
  public:
-  MetalScreenshotter();
+  explicit MetalScreenshotter(bool enable_wide_gamut);
 
-  std::unique_ptr<MetalScreenshot> MakeScreenshot(AiksContext& aiks_context,
-                                                  const Picture& picture,
-                                                  const ISize& size = {300,
-                                                                       300},
-                                                  bool scale_content = true);
+  std::unique_ptr<Screenshot> MakeScreenshot(
+      AiksContext& aiks_context,
+      const std::shared_ptr<Texture> texture) override;
 
-  PlaygroundImpl& GetPlayground() { return *playground_; }
+  PlaygroundImpl& GetPlayground() override { return *playground_; }
 
  private:
   std::unique_ptr<PlaygroundImpl> playground_;

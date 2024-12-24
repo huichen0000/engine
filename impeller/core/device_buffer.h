@@ -9,16 +9,13 @@
 #include <string>
 
 #include "impeller/core/allocator.h"
-#include "impeller/core/buffer.h"
 #include "impeller/core/buffer_view.h"
 #include "impeller/core/device_buffer_descriptor.h"
 #include "impeller/core/range.h"
-#include "impeller/core/texture.h"
 
 namespace impeller {
 
-class DeviceBuffer : public Buffer,
-                     public std::enable_shared_from_this<DeviceBuffer> {
+class DeviceBuffer {
  public:
   virtual ~DeviceBuffer();
 
@@ -26,19 +23,12 @@ class DeviceBuffer : public Buffer,
                                     Range source_range,
                                     size_t offset = 0u);
 
-  virtual bool SetLabel(const std::string& label) = 0;
+  virtual bool SetLabel(std::string_view label) = 0;
 
-  virtual bool SetLabel(const std::string& label, Range range) = 0;
+  virtual bool SetLabel(std::string_view label, Range range) = 0;
 
-  BufferView AsBufferView() const;
-
-  virtual std::shared_ptr<Texture> AsTexture(
-      Allocator& allocator,
-      const TextureDescriptor& descriptor,
-      uint16_t row_bytes) const;
-
-  // |Buffer|
-  std::shared_ptr<const DeviceBuffer> GetDeviceBuffer() const;
+  /// @brief Create a buffer view of this entire buffer.
+  static BufferView AsBufferView(std::shared_ptr<DeviceBuffer> buffer);
 
   const DeviceBufferDescriptor& GetDeviceBufferDescriptor() const;
 
@@ -52,6 +42,8 @@ class DeviceBuffer : public Buffer,
   ///
   /// If the range is not provided, the entire buffer is flushed.
   virtual void Flush(std::optional<Range> range = std::nullopt) const;
+
+  virtual void Invalidate(std::optional<Range> range = std::nullopt) const;
 
  protected:
   const DeviceBufferDescriptor desc_;

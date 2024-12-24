@@ -1,3 +1,7 @@
+// Copyright 2013 The Flutter Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 package io.flutter.embedding.android;
 
 import static android.view.KeyEvent.*;
@@ -14,6 +18,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import androidx.annotation.NonNull;
@@ -88,7 +93,7 @@ public class KeyboardManagerTest {
     /**
      * Construct an empty call record.
      *
-     * <p>Use the static functions to constuct specific types instead.
+     * <p>Use the static functions to construct specific types instead.
      */
     private CallRecord() {}
 
@@ -541,7 +546,7 @@ public class KeyboardManagerTest {
   }
 
   @Test
-  public void channelReponderHandlesEvents() {
+  public void channelResponderHandlesEvents() {
     final KeyboardTester tester = new KeyboardTester();
     final KeyEvent keyEvent = new FakeKeyEvent(ACTION_DOWN, 65);
     final ArrayList<CallRecord> calls = new ArrayList<>();
@@ -567,7 +572,7 @@ public class KeyboardManagerTest {
   }
 
   @Test
-  public void embedderReponderHandlesEvents() {
+  public void embedderResponderHandlesEvents() {
     final KeyboardTester tester = new KeyboardTester();
     final KeyEvent keyEvent = new FakeKeyEvent(ACTION_DOWN, SCAN_KEY_A, KEYCODE_A, 0, 'a', 0);
     final ArrayList<CallRecord> calls = new ArrayList<>();
@@ -597,6 +602,38 @@ public class KeyboardManagerTest {
     calls.get(0).reply.accept(true);
     verify(tester.mockView, times(0)).onTextInputKeyEvent(any(KeyEvent.class));
     verify(tester.mockView, times(0)).redispatch(any(KeyEvent.class));
+  }
+
+  @Test
+  public void embedderResponderHandlesNullReply() {
+    // Regression test for https://github.com/flutter/flutter/issues/141662.
+    final BinaryMessenger mockMessenger = mock(BinaryMessenger.class);
+    doAnswer(
+            invocation -> {
+              final BinaryMessenger.BinaryReply reply = invocation.getArgument(2);
+              // Simulate a null reply.
+              // In release mode, a null reply might happen when the engine sends a message
+              // before the framework has started.
+              reply.reply(null);
+              return null;
+            })
+        .when(mockMessenger)
+        .send(any(String.class), any(ByteBuffer.class), any(BinaryMessenger.BinaryReply.class));
+
+    final KeyboardManager.ViewDelegate mockView = mock(KeyboardManager.ViewDelegate.class);
+    doAnswer(invocation -> mockMessenger).when(mockView).getBinaryMessenger();
+
+    final KeyboardManager keyboardManager = new KeyboardManager(mockView);
+    final KeyEvent keyEvent = new FakeKeyEvent(ACTION_DOWN, SCAN_KEY_A, KEYCODE_A, 0, 'a', 0);
+
+    boolean exceptionThrown = false;
+    try {
+      final boolean result = keyboardManager.handleEvent(keyEvent);
+    } catch (Exception exception) {
+      exceptionThrown = true;
+    }
+
+    assertEquals(false, exceptionThrown);
   }
 
   @Test
@@ -1888,5 +1925,89 @@ public class KeyboardManagerTest {
     tester.keyboardManager.handleEvent(
         new FakeKeyEvent(ACTION_UP, SCAN_KEY_A, KEYCODE_A, 0, 'a', 0));
     assertEquals(tester.keyboardManager.getKeyboardState(), Map.of());
+  }
+
+  @Test
+  public void deviceTypeFromInputDevice() {
+    final KeyboardTester tester = new KeyboardTester();
+    final ArrayList<CallRecord> calls = new ArrayList<>();
+
+    tester.recordEmbedderCallsTo(calls);
+    tester.respondToTextInputWith(true);
+
+    // Keyboard
+    final KeyEvent keyboardEvent =
+        new FakeKeyEvent(
+            ACTION_DOWN, SCAN_KEY_A, KEYCODE_A, 0, 'a', 0, InputDevice.SOURCE_KEYBOARD);
+    assertEquals(true, tester.keyboardManager.handleEvent(keyboardEvent));
+    verifyEmbedderEvents(
+        calls,
+        new KeyData[] {
+          buildKeyData(Type.kDown, PHYSICAL_KEY_A, LOGICAL_KEY_A, "a", false, DeviceType.kKeyboard),
+        });
+    calls.clear();
+
+    // Directional pad
+    final KeyEvent directionalPadEvent =
+        new FakeKeyEvent(
+            ACTION_DOWN, SCAN_ARROW_LEFT, KEYCODE_DPAD_LEFT, 0, '\0', 0, InputDevice.SOURCE_DPAD);
+    assertEquals(true, tester.keyboardManager.handleEvent(directionalPadEvent));
+    verifyEmbedderEvents(
+        calls,
+        new KeyData[] {
+          buildKeyData(
+              Type.kDown,
+              PHYSICAL_ARROW_LEFT,
+              LOGICAL_ARROW_LEFT,
+              null,
+              false,
+              DeviceType.kDirectionalPad),
+        });
+    calls.clear();
+
+    // Gamepad
+    final KeyEvent gamepadEvent =
+        new FakeKeyEvent(
+            ACTION_DOWN, SCAN_ARROW_LEFT, KEYCODE_BUTTON_A, 0, '\0', 0, InputDevice.SOURCE_GAMEPAD);
+    assertEquals(true, tester.keyboardManager.handleEvent(gamepadEvent));
+    verifyEmbedderEvents(
+        calls,
+        new KeyData[] {
+          buildKeyData(
+              Type.kUp, PHYSICAL_ARROW_LEFT, LOGICAL_ARROW_LEFT, null, true, DeviceType.kKeyboard),
+          buildKeyData(
+              Type.kDown,
+              PHYSICAL_ARROW_LEFT,
+              LOGICAL_GAME_BUTTON_A,
+              null,
+              false,
+              DeviceType.kGamepad),
+        });
+    calls.clear();
+
+    // HDMI
+    final KeyEvent hdmiEvent =
+        new FakeKeyEvent(
+            ACTION_DOWN, SCAN_ARROW_LEFT, KEYCODE_BUTTON_A, 0, '\0', 0, InputDevice.SOURCE_HDMI);
+    assertEquals(true, tester.keyboardManager.handleEvent(hdmiEvent));
+    verifyEmbedderEvents(
+        calls,
+        new KeyData[] {
+          buildKeyData(
+              Type.kUp,
+              PHYSICAL_ARROW_LEFT,
+              LOGICAL_GAME_BUTTON_A,
+              null,
+              true,
+              DeviceType.kKeyboard),
+          buildKeyData(
+              Type.kDown,
+              PHYSICAL_ARROW_LEFT,
+              LOGICAL_GAME_BUTTON_A,
+              null,
+              false,
+              DeviceType.kHdmi),
+        });
+    calls.clear();
   }
 }

@@ -24,26 +24,21 @@ TEST_P(EntityPassTargetTest, SwapWithMSAATexture) {
   }
   auto content_context = GetContentContext();
   auto buffer = content_context->GetContext()->CreateCommandBuffer();
-  auto render_target = RenderTarget::CreateOffscreenMSAA(
-      *content_context->GetContext(),
-      *GetContentContext()->GetRenderTargetCache(), {100, 100});
+  auto render_target =
+      GetContentContext()->GetRenderTargetCache()->CreateOffscreenMSAA(
+          *content_context->GetContext(), {100, 100},
+          /*mip_count=*/1);
 
   auto entity_pass_target = EntityPassTarget(render_target, false, false);
 
-  auto color0 = entity_pass_target.GetRenderTarget()
-                    .GetColorAttachments()
-                    .find(0u)
-                    ->second;
+  auto color0 = entity_pass_target.GetRenderTarget().GetColorAttachment(0);
   auto msaa_tex = color0.texture;
   auto resolve_tex = color0.resolve_texture;
 
-  entity_pass_target.Flip(
-      *content_context->GetContext()->GetResourceAllocator());
+  FML_DCHECK(content_context);
+  entity_pass_target.Flip(*content_context);
 
-  color0 = entity_pass_target.GetRenderTarget()
-               .GetColorAttachments()
-               .find(0u)
-               ->second;
+  color0 = entity_pass_target.GetRenderTarget().GetColorAttachment(0);
 
   ASSERT_EQ(msaa_tex, color0.texture);
   ASSERT_NE(resolve_tex, color0.resolve_texture);
@@ -70,7 +65,7 @@ TEST_P(EntityPassTargetTest, SwapWithMSAAImplicitResolve) {
     color0_tex_desc.sample_count = SampleCount::kCount4;
     color0_tex_desc.format = pixel_format;
     color0_tex_desc.size = ISize{100, 100};
-    color0_tex_desc.usage = static_cast<uint64_t>(TextureUsage::kRenderTarget);
+    color0_tex_desc.usage = TextureUsage::kRenderTarget;
 
     auto color0_msaa_tex = allocator.CreateTexture(color0_tex_desc);
 
@@ -88,22 +83,16 @@ TEST_P(EntityPassTargetTest, SwapWithMSAAImplicitResolve) {
 
   auto entity_pass_target = EntityPassTarget(render_target, false, true);
 
-  auto color0 = entity_pass_target.GetRenderTarget()
-                    .GetColorAttachments()
-                    .find(0u)
-                    ->second;
+  auto color0 = entity_pass_target.GetRenderTarget().GetColorAttachment(0);
   auto msaa_tex = color0.texture;
   auto resolve_tex = color0.resolve_texture;
 
   ASSERT_EQ(msaa_tex, resolve_tex);
 
-  entity_pass_target.Flip(
-      *content_context->GetContext()->GetResourceAllocator());
+  FML_DCHECK(content_context);
+  entity_pass_target.Flip(*content_context);
 
-  color0 = entity_pass_target.GetRenderTarget()
-               .GetColorAttachments()
-               .find(0u)
-               ->second;
+  color0 = entity_pass_target.GetRenderTarget().GetColorAttachment(0);
 
   ASSERT_NE(msaa_tex, color0.texture);
   ASSERT_NE(resolve_tex, color0.resolve_texture);

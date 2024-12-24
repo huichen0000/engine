@@ -42,6 +42,8 @@ class Display {
 /// Each [FlutterView] has its own layer tree that is rendered
 /// whenever [render] is called on it with a [Scene].
 ///
+/// References to [FlutterView] objects are obtained via the [PlatformDispatcher].
+///
 /// ## Insets and Padding
 ///
 /// {@animation 300 300 https://flutter.github.io/assets-for-api-docs/assets/widgets/window_padding.mp4}
@@ -372,22 +374,11 @@ class FlutterView {
   /// * [RendererBinding], the Flutter framework class which manages layout and
   ///   painting.
   void render(Scene scene, {Size? size}) {
-    // Duplicated calls or calls outside of onBeginFrame/onDrawFrame (indicated
-    // by _debugRenderedViews being null) are ignored. See _debugRenderedViews.
-    // TODO(dkwingsmt): We should change this skip into an assertion.
-    // https://github.com/flutter/flutter/issues/137073
-    bool validRender = true;
-    assert(() {
-      validRender = platformDispatcher._debugRenderedViews?.add(this) ?? false;
-      return true;
-    }());
-    if (validRender) {
-      _render(scene as _NativeScene, size?.width ?? physicalSize.width, size?.height ?? physicalSize.height);
-    }
+    _render(viewId, scene as _NativeScene, size?.width ?? physicalSize.width, size?.height ?? physicalSize.height);
   }
 
-  @Native<Void Function(Pointer<Void>, Double, Double)>(symbol: 'PlatformConfigurationNativeApi::Render')
-  external static void _render(_NativeScene scene, double width, double height);
+  @Native<Void Function(Int64, Pointer<Void>, Double, Double)>(symbol: 'PlatformConfigurationNativeApi::Render')
+  external static void _render(int viewId, _NativeScene scene, double width, double height);
 
   /// Change the retained semantics data about this [FlutterView].
   ///
@@ -569,6 +560,13 @@ class SingletonFlutterWindow extends FlutterView {
   /// [SpellCheckConfiguration] when spell check is enabled, but no spell check
   /// service is specified.
   bool get nativeSpellCheckServiceDefined => platformDispatcher.nativeSpellCheckServiceDefined;
+
+  /// Whether the spell check service is supported on the current platform.
+  ///
+  /// This option is used by [EditableTextState] to define its
+  /// [SpellCheckConfiguration] when a default spell check service
+  /// is requested.
+  bool get supportsShowingSystemContextMenu => platformDispatcher.supportsShowingSystemContextMenu;
 
   /// Whether briefly displaying the characters as you type in obscured text
   /// fields is enabled in system settings.
@@ -1061,6 +1059,13 @@ enum Brightness {
 final SingletonFlutterWindow window = SingletonFlutterWindow._();
 
 /// Additional data available on each flutter frame.
+///
+/// See also:
+///
+///  * [Window.frameData] and [PlatformDispatcher.frameData], which expose the
+///    frame data for the current frame.
+///  * [PlatformDispatcher.onFrameDataChanged], which notifies listeners when
+///    a window's frame data has changed.
 class FrameData {
   const FrameData._({this.frameNumber = -1});
 

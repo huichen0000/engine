@@ -1,5 +1,7 @@
 package io.flutter.embedding.engine.systemchannels;
 
+import static io.flutter.Build.API_LEVELS;
+
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
@@ -367,14 +369,6 @@ public class TextInputChannel {
         "TextInputClient.performPrivateCommand", Arrays.asList(inputClientId, json));
   }
 
-  /** Instructs Flutter to execute a "onConnectionClosed" action. */
-  public void onConnectionClosed(int inputClientId) {
-    Log.v(TAG, "Sending 'onConnectionClosed' message.");
-    channel.invokeMethod(
-        "TextInputClient.onConnectionClosed",
-        Arrays.asList(inputClientId, "TextInputClient.onConnectionClosed"));
-  }
-
   /**
    * Sets the {@link TextInputMethodHandler} which receives all events and requests that are parsed
    * from the underlying platform channel.
@@ -550,7 +544,7 @@ public class TextInputChannel {
 
       @NonNull
       private static String translateAutofillHint(@NonNull String hint) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT < API_LEVELS.API_26) {
           return hint;
         }
         switch (hint) {
@@ -723,7 +717,8 @@ public class TextInputChannel {
     EMAIL_ADDRESS("TextInputType.emailAddress"),
     URL("TextInputType.url"),
     VISIBLE_PASSWORD("TextInputType.visiblePassword"),
-    NONE("TextInputType.none");
+    NONE("TextInputType.none"),
+    WEB_SEARCH("TextInputType.webSearch");
 
     static TextInputType fromValue(@NonNull String encodedName) throws NoSuchFieldException {
       for (TextInputType textInputType : TextInputType.values()) {

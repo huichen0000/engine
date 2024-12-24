@@ -12,20 +12,20 @@ import 'view_embedder/flutter_view_manager.dart';
 /// The type of a function that initializes an engine (in Dart).
 typedef InitEngineFn = Future<void> Function([JsFlutterConfiguration? params]);
 
+/// The signature of the `runApp` function passed to [AppBootstrap].
+typedef AppBootstrapRunAppFn = Future<void> Function();
+
 /// A class that controls the coarse lifecycle of a Flutter app.
 class AppBootstrap {
   /// Construct an AppBootstrap.
-  AppBootstrap({required InitEngineFn initializeEngine, required Function runApp}) :
+  AppBootstrap({required InitEngineFn initializeEngine, required AppBootstrapRunAppFn runApp}) :
     _initializeEngine = initializeEngine, _runApp = runApp;
 
   // A function to initialize the engine.
   final InitEngineFn _initializeEngine;
 
   // A function to run the app.
-  //
-  // TODO(dit): Be more strict with the typedef of this function, so we can add
-  // typed params to the function. (See InitEngineFn).
-  final Function _runApp;
+  final AppBootstrapRunAppFn _runApp;
 
   /// Immediately bootstraps the app.
   ///
@@ -68,11 +68,11 @@ class AppBootstrap {
   /// Represents the App that was just started, and its JS API.
   FlutterApp _prepareFlutterApp() {
     return FlutterApp(
-      addView: (JsFlutterViewOptions options) async {
+      addView: (JsFlutterViewOptions options) {
         assert(configuration.multiViewEnabled, 'Cannot addView when multiView is not enabled');
         return viewManager.createAndRegisterView(options).viewId;
       },
-      removeView: (int viewId) async {
+      removeView: (int viewId) {
         assert(configuration.multiViewEnabled, 'Cannot removeView when multiView is not enabled');
         return viewManager.disposeAndUnregisterView(viewId);
       }

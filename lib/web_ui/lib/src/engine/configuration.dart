@@ -57,6 +57,7 @@ FlutterConfiguration get configuration {
   }
   return _configuration ??= FlutterConfiguration.legacy(_jsConfiguration);
 }
+
 FlutterConfiguration? _configuration;
 
 FlutterConfiguration? _debugConfiguration;
@@ -106,14 +107,15 @@ class FlutterConfiguration {
     // Warn the user of the deprecated behavior.
     assert(() {
       if (config != null) {
-        domWindow.console.warn('window.flutterConfiguration is now deprecated.\n'
-          'Use engineInitializer.initializeEngine(config) instead.\n'
-          'See: https://docs.flutter.dev/development/platform-integration/web/initialization');
+        domWindow.console.warn(
+            'window.flutterConfiguration is now deprecated.\n'
+            'Use engineInitializer.initializeEngine(config) instead.\n'
+            'See: https://docs.flutter.dev/development/platform-integration/web/initialization');
       }
       if (_requestedRendererType != null) {
         domWindow.console.warn('window.flutterWebRenderer is now deprecated.\n'
-          'Use engineInitializer.initializeEngine(config) instead.\n'
-          'See: https://docs.flutter.dev/development/platform-integration/web/initialization');
+            'Use engineInitializer.initializeEngine(config) instead.\n'
+            'See: https://docs.flutter.dev/development/platform-integration/web/initialization');
       }
       return true;
     }());
@@ -143,14 +145,16 @@ class FlutterConfiguration {
   /// constructor.
   void setUserConfiguration(JsFlutterConfiguration? configuration) {
     if (configuration != null) {
-      assert(!_usedLegacyConfigStyle,
-        'Use engineInitializer.initializeEngine(config) only. '
-        'Using the (deprecated) window.flutterConfiguration and initializeEngine '
-        'configuration simultaneously is not supported.');
-      assert(_requestedRendererType == null || configuration.renderer == null,
-        'Use engineInitializer.initializeEngine(config) only. '
-        'Using the (deprecated) window.flutterWebRenderer and initializeEngine '
-        'configuration simultaneously is not supported.');
+      assert(
+          !_usedLegacyConfigStyle,
+          'Use engineInitializer.initializeEngine(config) only. '
+          'Using the (deprecated) window.flutterConfiguration and initializeEngine '
+          'configuration simultaneously is not supported.');
+      assert(
+          _requestedRendererType == null || configuration.renderer == null,
+          'Use engineInitializer.initializeEngine(config) only. '
+          'Using the (deprecated) window.flutterWebRenderer and initializeEngine '
+          'configuration simultaneously is not supported.');
       _configuration = configuration;
     }
   }
@@ -163,7 +167,7 @@ class FlutterConfiguration {
 
   /// Auto detect which rendering backend to use.
   ///
-  /// Using flutter tools option "--web-render=auto" or not specifying one
+  /// Using flutter tools option "--web-renderer=auto" or not specifying one
   /// would set the value to true. Otherwise, it would be false.
   static const bool flutterWebAutoDetect =
       bool.fromEnvironment('FLUTTER_WEB_AUTO_DETECT', defaultValue: true);
@@ -173,13 +177,11 @@ class FlutterConfiguration {
 
   /// Enable the Skia-based rendering backend.
   ///
-  /// Using flutter tools option "--web-render=canvaskit" would set the value to
+  /// Using flutter tools option "--web-renderer=canvaskit" would set the value to
   /// true.
   ///
-  /// Using flutter tools option "--web-render=html" would set the value to false.
-  static const bool useSkia =
-      bool.fromEnvironment('FLUTTER_WEB_USE_SKIA');
-
+  /// Using flutter tools option "--web-renderer=html" would set the value to false.
+  static const bool useSkia = bool.fromEnvironment('FLUTTER_WEB_USE_SKIA');
 
   // Runtime parameters.
   //
@@ -229,13 +231,14 @@ class FlutterConfiguration {
   ///
   /// Example:
   ///
-  /// ```
+  /// ```bash
   /// flutter run \
   ///   -d chrome \
   ///   --web-renderer=canvaskit \
   ///   --dart-define=FLUTTER_WEB_CANVASKIT_URL=https://example.com/custom-canvaskit-build/
   /// ```
-  String get canvasKitBaseUrl => _configuration?.canvasKitBaseUrl ?? _defaultCanvasKitBaseUrl;
+  String get canvasKitBaseUrl =>
+      _configuration?.canvasKitBaseUrl ?? _defaultCanvasKitBaseUrl;
   static const String _defaultCanvasKitBaseUrl = String.fromEnvironment(
     'FLUTTER_WEB_CANVASKIT_URL',
     defaultValue: 'canvaskit/',
@@ -262,10 +265,23 @@ class FlutterConfiguration {
   ///
   /// This is mainly used for testing or for apps that want to ensure they
   /// run on devices which don't support WebGL.
-  bool get canvasKitForceCpuOnly => _configuration?.canvasKitForceCpuOnly ?? _defaultCanvasKitForceCpuOnly;
+  bool get canvasKitForceCpuOnly =>
+      _configuration?.canvasKitForceCpuOnly ?? _defaultCanvasKitForceCpuOnly;
   static const bool _defaultCanvasKitForceCpuOnly = bool.fromEnvironment(
     'FLUTTER_WEB_CANVASKIT_FORCE_CPU_ONLY',
   );
+
+  /// The maximum number of canvases to use when rendering in CanvasKit.
+  ///
+  /// Limits the amount of overlays that can be created.
+  int get canvasKitMaximumSurfaces {
+    final int maxSurfaces =
+        _configuration?.canvasKitMaximumSurfaces?.toInt() ?? 8;
+    if (maxSurfaces < 1) {
+      return 1;
+    }
+    return maxSurfaces;
+  }
 
   /// Set this flag to `true` to cause the engine to visualize the semantics tree
   /// on the screen for debugging.
@@ -275,10 +291,12 @@ class FlutterConfiguration {
   ///
   /// Example:
   ///
-  /// ```
+  /// ```bash
   /// flutter run -d chrome --profile --dart-define=FLUTTER_WEB_DEBUG_SHOW_SEMANTICS=true
   /// ```
-  bool get debugShowSemanticsNodes => _configuration?.debugShowSemanticsNodes ?? _defaultDebugShowSemanticsNodes;
+  bool get debugShowSemanticsNodes =>
+      _configuration?.debugShowSemanticsNodes ??
+      _defaultDebugShowSemanticsNodes;
   static const bool _defaultDebugShowSemanticsNodes = bool.fromEnvironment(
     'FLUTTER_WEB_DEBUG_SHOW_SEMANTICS',
   );
@@ -309,13 +327,18 @@ class FlutterConfiguration {
   /// `window.flutterWebRenderer`.
   ///
   /// This is used by the Renderer class to decide how to initialize the engine.
-  String? get requestedRendererType => _configuration?.renderer ?? _requestedRendererType;
+  String? get requestedRendererType =>
+      _configuration?.renderer ?? _requestedRendererType;
 
-  /// Whether to use color emojis or not.
+  /// Returns the base URL to load fallback fonts from. Fallback fonts are
+  /// downloaded automatically when there is no font bundled with the app that
+  /// can show a glyph that is being rendered.
   ///
-  /// The font used to render color emojis is large (~24MB). This configuration
-  /// gives developers the ability to decide for their app.
-  bool get useColorEmoji => _configuration?.useColorEmoji ?? false;
+  /// Defaults to 'https://fonts.gstatic.com/s/'.
+  String get fontFallbackBaseUrl =>
+      _configuration?.fontFallbackBaseUrl ?? 'https://fonts.gstatic.com/s/';
+
+  bool get forceSingleThreadedSkwasm => _configuration?.forceSingleThreadedSkwasm ?? false;
 }
 
 @JS('window.flutterConfiguration')
@@ -346,6 +369,11 @@ extension JsFlutterConfigurationExtension on JsFlutterConfiguration {
   external JSBoolean? get _canvasKitForceCpuOnly;
   bool? get canvasKitForceCpuOnly => _canvasKitForceCpuOnly?.toDart;
 
+  @JS('canvasKitMaximumSurfaces')
+  external JSNumber? get _canvasKitMaximumSurfaces;
+  double? get canvasKitMaximumSurfaces =>
+      _canvasKitMaximumSurfaces?.toDartDouble;
+
   @JS('debugShowSemanticsNodes')
   external JSBoolean? get _debugShowSemanticsNodes;
   bool? get debugShowSemanticsNodes => _debugShowSemanticsNodes?.toDart;
@@ -364,9 +392,13 @@ extension JsFlutterConfigurationExtension on JsFlutterConfiguration {
   external JSString? get _renderer;
   String? get renderer => _renderer?.toDart;
 
-  @JS('useColorEmoji')
-  external JSBoolean? get _useColorEmoji;
-  bool? get useColorEmoji => _useColorEmoji?.toDart;
+  @JS('fontFallbackBaseUrl')
+  external JSString? get _fontFallbackBaseUrl;
+  String? get fontFallbackBaseUrl => _fontFallbackBaseUrl?.toDart;
+
+  @JS('forceSingleThreadedSkwasm')
+  external JSBoolean? get _forceSingleThreadedSkwasm;
+  bool? get forceSingleThreadedSkwasm => _forceSingleThreadedSkwasm?.toDart;
 }
 
 /// A JavaScript entrypoint that allows developer to set rendering backend

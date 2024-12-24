@@ -6,12 +6,13 @@
 #define FLUTTER_IMPELLER_GEOMETRY_PATH_H_
 
 #include <functional>
+#include <memory>
 #include <optional>
-#include <set>
 #include <tuple>
 #include <vector>
 
 #include "impeller/geometry/path_component.h"
+#include "impeller/geometry/rect.h"
 
 namespace impeller {
 
@@ -30,9 +31,6 @@ enum class Join {
 enum class FillType {
   kNonZero,  // The default winding order.
   kOdd,
-  kPositive,
-  kNegative,
-  kAbsGeqTwo,
 };
 
 enum class Convexity {
@@ -60,6 +58,21 @@ class Path {
     kCubic,
     kContour,
   };
+
+  static constexpr size_t VerbToOffset(Path::ComponentType verb) {
+    switch (verb) {
+      case Path::ComponentType::kLinear:
+        return 2u;
+      case Path::ComponentType::kQuadratic:
+        return 3u;
+      case Path::ComponentType::kCubic:
+        return 4u;
+      case Path::ComponentType::kContour:
+        return 2u;
+        break;
+    }
+    FML_UNREACHABLE();
+  }
 
   struct PolylineContour {
     struct Component {
@@ -133,24 +146,16 @@ class Path {
 
   ~Path();
 
-  Path(Path&& other) = default;
-
-  /// @brief Deeply clone this path and all data associated with it.
-  Path Clone() const;
-
   size_t GetComponentCount(std::optional<ComponentType> type = {}) const;
 
   FillType GetFillType() const;
 
   bool IsConvex() const;
 
-  template <class T>
-  using Applier = std::function<void(size_t index, const T& component)>;
-  void EnumerateComponents(
-      const Applier<LinearPathComponent>& linear_applier,
-      const Applier<QuadraticPathComponent>& quad_applier,
-      const Applier<CubicPathComponent>& cubic_applier,
-      const Applier<ContourComponent>& contour_applier) const;
+  bool IsEmpty() const;
+
+  /// @brief Whether the line contains a single contour.
+  bool IsSingleContour() const;
 
   bool GetLinearComponentAtIndex(size_t index,
                                  LinearPathComponent& linear) const;
@@ -175,64 +180,61 @@ class Path {
           std::make_unique<std::vector<Point>>(),
       Polyline::ReclaimPointBufferCallback reclaim = nullptr) const;
 
+  void EndContour(
+      size_t storage_offset,
+      Polyline& polyline,
+      size_t component_index,
+      std::vector<PolylineContour::Component>& poly_components) const;
+
   std::optional<Rect> GetBoundingBox() const;
 
   std::optional<Rect> GetTransformedBoundingBox(const Matrix& transform) const;
 
-  std::optional<std::pair<Point, Point>> GetMinMaxCoveragePoints() const;
+  /// Generate a polyline into the temporary storage held by the [writer].
+  ///
+  /// It is suitable to use the max basis length of the matrix used to transform
+  /// the path. If the provided scale is 0, curves will revert to straight
+  /// lines.
+  void WritePolyline(Scalar scale, VertexWriter& writer) const;
+
+  /// Determine required storage for points and number of contours.
+  std::pair<size_t, size_t> CountStorage(Scalar scale) const;
 
  private:
   friend class PathBuilder;
 
-  Path(const Path& other) = default;
+  // All of the data for the path is stored in this structure which is
+  // held by a shared_ptr. Since they all share the structure, the
+  // copy constructor for Path is very cheap and we don't need to deal
+  // with shared pointers for Path fields and method arguments.
+  //
+  // PathBuilder also uses this structure to accumulate the path data
+  // but the Path constructor used in |TakePath()| will clone the
+  // structure to prevent sharing and future modifications within the
+  // builder from affecting the existing taken paths.
+  struct Data {
+    Data() = default;
 
-  void SetConvexity(Convexity value);
+    Data(Data&& other) = default;
 
-  void SetFillType(FillType fill);
+    Data(const Data& other) = default;
 
-  void SetBounds(Rect rect);
+    ~Data() = default;
 
-  Path& AddLinearComponent(const Point& p1, const Point& p2);
-
-  Path& AddQuadraticComponent(const Point& p1,
-                              const Point& cp,
-                              const Point& p2);
-
-  Path& AddCubicComponent(const Point& p1,
-                          const Point& cp1,
-                          const Point& cp2,
-                          const Point& p2);
-
-  Path& AddContourComponent(const Point& destination, bool is_closed = false);
-
-  /// @brief Called by `PathBuilder` to compute the bounds for certain paths.
-  ///
-  /// `PathBuilder` may set the bounds directly, in case they come from a source
-  /// with already computed bounds, such as an SkPath.
-  void ComputeBounds();
-
-  void SetContourClosed(bool is_closed);
-
-  void Shift(Point shift);
-
-  struct ComponentIndexPair {
-    ComponentType type = ComponentType::kLinear;
-    size_t index = 0;
-
-    ComponentIndexPair() {}
-
-    ComponentIndexPair(ComponentType a_type, size_t a_index)
-        : type(a_type), index(a_index) {}
+    FillType fill = FillType::kNonZero;
+    Convexity convexity = Convexity::kUnknown;
+    bool single_countour = true;
+    std::optional<Rect> bounds;
+    std::vector<Point> points;
+    std::vector<ComponentType> components;
   };
 
-  FillType fill_ = FillType::kNonZero;
-  Convexity convexity_ = Convexity::kUnknown;
-  std::vector<ComponentIndexPair> components_;
-  std::vector<Point> points_;
-  std::vector<ContourComponent> contours_;
+  explicit Path(Data data);
 
-  std::optional<Rect> computed_bounds_;
+  std::shared_ptr<const Data> data_;
 };
+
+static_assert(sizeof(Path) == sizeof(std::shared_ptr<struct Anonymous>));
 
 }  // namespace impeller
 

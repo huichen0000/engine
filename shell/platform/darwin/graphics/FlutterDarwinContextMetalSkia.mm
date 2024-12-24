@@ -2,16 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#if !SLIMPELLER
+
 #import "flutter/shell/platform/darwin/graphics/FlutterDarwinContextMetalSkia.h"
 
 #include "flutter/common/graphics/persistent_cache.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/platform/darwin/cf_utils.h"
 #include "flutter/shell/common/context_options.h"
 #import "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
+#include "third_party/skia/include/gpu/ganesh/GrDirectContext.h"
+#include "third_party/skia/include/gpu/ganesh/mtl/GrMtlBackendContext.h"
+#include "third_party/skia/include/gpu/ganesh/mtl/GrMtlDirectContext.h"
 
 FLUTTER_ASSERT_ARC
 
-@implementation FlutterDarwinContextMetalSkia
+@implementation FlutterDarwinContextMetalSkia {
+  fml::CFRef<CVMetalTextureCacheRef> _textureCache;
+}
 
 - (instancetype)initWithDefaultMTLDevice {
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -38,15 +46,19 @@ FLUTTER_ASSERT_ARC
 
     [_commandQueue setLabel:@"Flutter Main Queue"];
 
-    CVReturn cvReturn = CVMetalTextureCacheCreate(kCFAllocatorDefault,  // allocator
-                                                  nil,      // cache attributes (nil default)
-                                                  _device,  // metal device
-                                                  nil,      // texture attributes (nil default)
-                                                  &_textureCache  // [out] cache
-    );
-    if (cvReturn != kCVReturnSuccess) {
-      FML_DLOG(ERROR) << "Could not create Metal texture cache.";
-      return nil;
+    {
+      CVMetalTextureCacheRef cache = nullptr;
+      CVReturn cvReturn = CVMetalTextureCacheCreate(kCFAllocatorDefault,  // allocator
+                                                    nil,      // cache attributes (nil default)
+                                                    _device,  // metal device
+                                                    nil,      // texture attributes (nil default)
+                                                    &cache    // [out] cache
+      );
+      _textureCache.Reset(cache);
+      if (cvReturn != kCVReturnSuccess) {
+        FML_DLOG(ERROR) << "Could not create Metal texture cache.";
+        return nil;
+      }
     }
 
     // The devices are in the same "sharegroup" because they share the same device and command
@@ -60,14 +72,18 @@ FLUTTER_ASSERT_ARC
       return nil;
     }
 
+    // Only log this message on iOS where the default is Impeller. On macOS
+    // desktop, Skia is still the default and this log is unecessary.
+#if defined(FML_OS_IOS) || defined(FML_OS_IOS_SIM)
+    FML_LOG(IMPORTANT) << "Using the Skia rendering backend (Metal).";
+#endif  // defined(FML_OS_IOS) || defined(FML_OS_IOS_SIM)
+
     _resourceContext->setResourceCacheLimit(0u);
   }
   return self;
 }
 
 - (sk_sp<GrDirectContext>)createGrContext {
-  const auto contextOptions =
-      flutter::MakeDefaultContextOptions(flutter::ContextType::kRender, GrBackendApi::kMetal);
   id<MTLDevice> device = _device;
   id<MTLCommandQueue> commandQueue = _commandQueue;
   return [FlutterDarwinContextMetalSkia createGrContext:device commandQueue:commandQueue];
@@ -77,16 +93,12 @@ FLUTTER_ASSERT_ARC
                              commandQueue:(id<MTLCommandQueue>)commandQueue {
   const auto contextOptions =
       flutter::MakeDefaultContextOptions(flutter::ContextType::kRender, GrBackendApi::kMetal);
+  GrMtlBackendContext backendContext = {};
   // Skia expect arguments to `MakeMetal` transfer ownership of the reference in for release later
   // when the GrDirectContext is collected.
-  return GrDirectContext::MakeMetal((__bridge_retained void*)device,
-                                    (__bridge_retained void*)commandQueue, contextOptions);
-}
-
-- (void)dealloc {
-  if (_textureCache) {
-    CFRelease(_textureCache);
-  }
+  backendContext.fDevice.retain((__bridge void*)device);
+  backendContext.fQueue.retain((__bridge void*)commandQueue);
+  return GrDirectContexts::MakeMetal(backendContext, contextOptions);
 }
 
 - (FlutterDarwinExternalTextureMetal*)
@@ -98,4 +110,10 @@ FLUTTER_ASSERT_ARC
                                                           enableImpeller:NO];
 }
 
+- (CVMetalTextureCacheRef)textureCache {
+  return _textureCache;
+}
+
 @end
+
+#endif  //  !SLIMPELLER

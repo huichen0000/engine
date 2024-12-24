@@ -7,14 +7,11 @@
 
 #include <functional>
 #include <memory>
-#include <vector>
 
-#include "flutter/fml/macros.h"
 #include "impeller/core/sampler_descriptor.h"
 #include "impeller/entity/contents/color_source_contents.h"
 #include "impeller/entity/contents/filters/color_filter_contents.h"
 #include "impeller/entity/entity.h"
-#include "impeller/geometry/path.h"
 #include "impeller/renderer/capabilities.h"
 
 namespace impeller {
@@ -29,7 +26,7 @@ class TiledTextureContents final : public ColorSourceContents {
       std::function<std::shared_ptr<ColorFilterContents>(FilterInput::Ref)>;
 
   // |Contents|
-  bool IsOpaque() const override;
+  bool IsOpaque(const Matrix& transform) const override;
 
   // |Contents|
   bool Render(const ContentContext& renderer,
@@ -40,7 +37,7 @@ class TiledTextureContents final : public ColorSourceContents {
 
   void SetTileModes(Entity::TileMode x_tile_mode, Entity::TileMode y_tile_mode);
 
-  void SetSamplerDescriptor(SamplerDescriptor desc);
+  void SetSamplerDescriptor(const SamplerDescriptor& desc);
 
   /// @brief Set a color filter to apply directly to this tiled texture
   /// @param color_filter
@@ -61,7 +58,8 @@ class TiledTextureContents final : public ColorSourceContents {
       std::optional<Rect> coverage_limit = std::nullopt,
       const std::optional<SamplerDescriptor>& sampler_descriptor = std::nullopt,
       bool msaa_enabled = true,
-      const std::string& label = "Tiled Texture Snapshot") const override;
+      int32_t mip_count = 1,
+      std::string_view label = "Tiled Texture Snapshot") const override;
 
  private:
   std::shared_ptr<Texture> CreateFilterTexture(

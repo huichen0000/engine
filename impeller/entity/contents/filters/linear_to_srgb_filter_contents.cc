@@ -44,31 +44,28 @@ std::optional<Entity> LinearToSrgbFilterContents::RenderFilter(
                             absorb_opacity = GetAbsorbOpacity()](
                                const ContentContext& renderer,
                                const Entity& entity, RenderPass& pass) -> bool {
-    Command cmd;
-    DEBUG_COMMAND_INFO(cmd, "Linear to sRGB Filter");
-    cmd.stencil_reference = entity.GetClipDepth();
+    pass.SetCommandLabel("Linear to sRGB Filter");
 
     auto options = OptionsFromPassAndEntity(pass, entity);
     options.primitive_type = PrimitiveType::kTriangleStrip;
-    cmd.pipeline = renderer.GetLinearToSrgbFilterPipeline(options);
+    pass.SetPipeline(renderer.GetLinearToSrgbFilterPipeline(options));
 
     auto size = input_snapshot->texture->GetSize();
-
-    VertexBufferBuilder<VS::PerVertexData> vtx_builder;
-    vtx_builder.AddVertices({
-        {Point(0, 0)},
-        {Point(1, 0)},
-        {Point(0, 1)},
-        {Point(1, 1)},
-    });
+    std::array<VS::PerVertexData, 4> vertices = {
+        VS::PerVertexData{Point(0, 0)},
+        VS::PerVertexData{Point(1, 0)},
+        VS::PerVertexData{Point(0, 1)},
+        VS::PerVertexData{Point(1, 1)},
+    };
 
     auto& host_buffer = renderer.GetTransientsBuffer();
-    cmd.BindVertices(vtx_builder.CreateVertexBuffer(host_buffer));
+    pass.SetVertexBuffer(CreateVertexBuffer(vertices, host_buffer));
 
     VS::FrameInfo frame_info;
-    frame_info.mvp = pass.GetOrthographicTransform() * entity.GetTransform() *
-                     input_snapshot->transform *
-                     Matrix::MakeScale(Vector2(size));
+    frame_info.mvp = Entity::GetShaderTransform(
+        entity.GetShaderClipDepth(), pass,
+        entity.GetTransform() * input_snapshot->transform *
+            Matrix::MakeScale(Vector2(size)));
     frame_info.texture_sampler_y_coord_scale =
         input_snapshot->texture->GetYCoordScale();
 
@@ -78,12 +75,13 @@ std::optional<Entity> LinearToSrgbFilterContents::RenderFilter(
             ? input_snapshot->opacity
             : 1.0f;
 
-    auto sampler = renderer.GetContext()->GetSamplerLibrary()->GetSampler({});
-    FS::BindInputTexture(cmd, input_snapshot->texture, sampler);
-    FS::BindFragInfo(cmd, host_buffer.EmplaceUniform(frag_info));
-    VS::BindFrameInfo(cmd, host_buffer.EmplaceUniform(frame_info));
+    FS::BindInputTexture(
+        pass, input_snapshot->texture,
+        renderer.GetContext()->GetSamplerLibrary()->GetSampler({}));
+    FS::BindFragInfo(pass, host_buffer.EmplaceUniform(frag_info));
+    VS::BindFrameInfo(pass, host_buffer.EmplaceUniform(frame_info));
 
-    return pass.AddCommand(std::move(cmd));
+    return pass.Draw().ok();
   };
 
   CoverageProc coverage_proc =
@@ -95,7 +93,6 @@ std::optional<Entity> LinearToSrgbFilterContents::RenderFilter(
 
   Entity sub_entity;
   sub_entity.SetContents(std::move(contents));
-  sub_entity.SetClipDepth(entity.GetClipDepth());
   sub_entity.SetBlendMode(entity.GetBlendMode());
   return sub_entity;
 }

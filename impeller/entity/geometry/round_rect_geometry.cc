@@ -2,44 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <algorithm>
-
 #include "flutter/impeller/entity/geometry/round_rect_geometry.h"
-
-#include "flutter/impeller/entity/geometry/line_geometry.h"
 
 namespace impeller {
 
 RoundRectGeometry::RoundRectGeometry(const Rect& bounds, const Size& radii)
     : bounds_(bounds), radii_(radii) {}
 
+RoundRectGeometry::~RoundRectGeometry() = default;
+
 GeometryResult RoundRectGeometry::GetPositionBuffer(
     const ContentContext& renderer,
     const Entity& entity,
     RenderPass& pass) const {
   return ComputePositionGeometry(renderer,
-                                 renderer.GetTessellator()->FilledRoundRect(
+                                 renderer.GetTessellator().FilledRoundRect(
                                      entity.GetTransform(), bounds_, radii_),
                                  entity, pass);
-}
-
-// |Geometry|
-GeometryResult RoundRectGeometry::GetPositionUVBuffer(
-    Rect texture_coverage,
-    Matrix effect_transform,
-    const ContentContext& renderer,
-    const Entity& entity,
-    RenderPass& pass) const {
-  return ComputePositionUVGeometry(
-      renderer,
-      renderer.GetTessellator()->FilledRoundRect(entity.GetTransform(), bounds_,
-                                                 radii_),
-      texture_coverage.GetNormalizingTransform() * effect_transform, entity,
-      pass);
-}
-
-GeometryVertexType RoundRectGeometry::GetVertexType() const {
-  return GeometryVertexType::kPosition;
 }
 
 std::optional<Rect> RoundRectGeometry::GetCoverage(

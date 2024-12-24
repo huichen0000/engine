@@ -6,7 +6,7 @@ import 'dart:async';
 
 import 'package:args/command_runner.dart';
 import 'package:path/path.dart' as path;
-import 'package:watcher/src/watch_event.dart';
+import 'package:watcher/watcher.dart';
 
 import 'environment.dart';
 import 'exceptions.dart';
@@ -19,6 +19,7 @@ const Map<String, String> targetAliases = <String, String>{
   'canvaskit': 'flutter/third_party/canvaskit:canvaskit_group',
   'canvaskit_chromium': 'flutter/third_party/canvaskit:canvaskit_chromium_group',
   'skwasm': 'flutter/third_party/canvaskit:skwasm_group',
+  'skwasm_st': 'flutter/third_party/canvaskit:skwasm_st_group',
   'archive': 'flutter/web_sdk:flutter_web_sdk_archive',
 };
 

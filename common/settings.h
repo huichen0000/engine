@@ -22,6 +22,14 @@
 
 namespace flutter {
 
+// The combination of targeted graphics API and Impeller support.
+enum class AndroidRenderingAPI {
+  kSoftware,
+  kImpellerOpenGLES,
+  kImpellerVulkan,
+  kSkiaOpenGLES
+};
+
 class FrameTiming {
  public:
   enum Phase {
@@ -215,14 +223,29 @@ struct Settings {
 
   // Enable the Impeller renderer on supported platforms. Ignored if Impeller is
   // not supported on the platform.
+#if FML_OS_ANDROID || FML_OS_IOS || FML_OS_IOS_SIMULATOR
+  // On iOS devices, Impeller is the default with no opt-out and this field is
+  // const.
 #if FML_OS_IOS || FML_OS_IOS_SIMULATOR
-  bool enable_impeller = true;
+  static constexpr const
+#endif                              // FML_OS_IOS && !FML_OS_IOS_SIMULATOR
+      bool enable_impeller = true;  // NOLINT(readability-identifier-naming)
 #else
   bool enable_impeller = false;
 #endif
 
-  // Requests a particular backend to be used (ex "opengles" or "vulkan")
-  std::optional<std::string> impeller_backend;
+  // Force disable the android surface control even where supported.
+  bool disable_surface_control = false;
+
+  // Log a warning during shell initialization if Impeller is not enabled.
+  bool warn_on_impeller_opt_out = false;
+
+  // The selected Android rendering API.
+  AndroidRenderingAPI android_rendering_api =
+      AndroidRenderingAPI::kSkiaOpenGLES;
+
+  // Requests a specific rendering backend.
+  std::optional<std::string> requested_rendering_backend;
 
   // Enable Vulkan validation on backends that support it. The validation layers
   // must be available to the application.
@@ -231,6 +254,9 @@ struct Settings {
   // Enable GPU tracing in GLES backends.
   // Some devices claim to support the required APIs but crash on their usage.
   bool enable_opengl_gpu_tracing = false;
+
+  // Enable GPU tracing in Vulkan backends.
+  bool enable_vulkan_gpu_tracing = false;
 
   // Data set by platform-specific embedders for use in font initialization.
   uint32_t font_initialization_data = 0;
@@ -249,8 +275,6 @@ struct Settings {
   // associated resources.
   // It can be customized by application, more detail:
   // https://github.com/flutter/flutter/issues/95903
-  // TODO(eggfly): Should it be set to false by default?
-  // https://github.com/flutter/flutter/issues/96843
   bool leak_vm = true;
 
   // Engine settings
@@ -330,17 +354,19 @@ struct Settings {
   // Max bytes threshold of resource cache, or 0 for unlimited.
   size_t resource_cache_max_bytes_threshold = 0;
 
-  /// The minimum number of samples to require in multipsampled anti-aliasing.
-  ///
-  /// Setting this value to 0 or 1 disables MSAA.
-  /// If it is not 0 or 1, it must be one of 2, 4, 8, or 16. However, if the
-  /// GPU does not support the requested sampling value, MSAA will be disabled.
-  uint8_t msaa_samples = 0;
-
   /// Enable embedder api on the embedder.
   ///
   /// This is currently only used by iOS.
   bool enable_embedder_api = false;
+
+  /// Enable support for isolates that run on the platform thread.
+  ///
+  /// This is used by the runOnPlatformThread API.
+  bool enable_platform_isolates = false;
+
+  // If true, the UI thread is the platform thread on supported
+  // platforms.
+  bool merged_platform_ui_thread = true;
 };
 
 }  // namespace flutter

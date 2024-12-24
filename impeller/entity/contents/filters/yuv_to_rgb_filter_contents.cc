@@ -73,31 +73,30 @@ std::optional<Entity> YUVToRGBFilterContents::RenderFilter(
                             yuv_color_space = yuv_color_space_](
                                const ContentContext& renderer,
                                const Entity& entity, RenderPass& pass) -> bool {
-    Command cmd;
-    DEBUG_COMMAND_INFO(cmd, "YUV to RGB Filter");
-    cmd.stencil_reference = entity.GetClipDepth();
+    pass.SetCommandLabel("YUV to RGB Filter");
 
     auto options = OptionsFromPassAndEntity(pass, entity);
     options.primitive_type = PrimitiveType::kTriangleStrip;
-    cmd.pipeline = renderer.GetYUVToRGBFilterPipeline(options);
+    pass.SetPipeline(renderer.GetYUVToRGBFilterPipeline(options));
 
     auto size = y_input_snapshot->texture->GetSize();
 
-    VertexBufferBuilder<VS::PerVertexData> vtx_builder;
-    vtx_builder.AddVertices({
-        {Point(0, 0)},
-        {Point(1, 0)},
-        {Point(0, 1)},
-        {Point(1, 1)},
-    });
+    std::array<VS::PerVertexData, 4> vertices = {
+        VS::PerVertexData{Point(0, 0)},
+        VS::PerVertexData{Point(1, 0)},
+        VS::PerVertexData{Point(0, 1)},
+        VS::PerVertexData{Point(1, 1)},
+    };
 
     auto& host_buffer = renderer.GetTransientsBuffer();
-    cmd.BindVertices(vtx_builder.CreateVertexBuffer(host_buffer));
+    pass.SetVertexBuffer(
+        CreateVertexBuffer(vertices, renderer.GetTransientsBuffer()));
 
     VS::FrameInfo frame_info;
-    frame_info.mvp = pass.GetOrthographicTransform() * entity.GetTransform() *
-                     y_input_snapshot->transform *
-                     Matrix::MakeScale(Vector2(size));
+    frame_info.mvp = Entity::GetShaderTransform(
+        entity.GetShaderClipDepth(), pass,
+        entity.GetTransform() * y_input_snapshot->transform *
+            Matrix::MakeScale(Vector2(size)));
     frame_info.texture_sampler_y_coord_scale =
         y_input_snapshot->texture->GetYCoordScale();
 
@@ -112,14 +111,15 @@ std::optional<Entity> YUVToRGBFilterContents::RenderFilter(
         break;
     }
 
-    auto sampler = renderer.GetContext()->GetSamplerLibrary()->GetSampler({});
-    FS::BindYTexture(cmd, y_input_snapshot->texture, sampler);
-    FS::BindUvTexture(cmd, uv_input_snapshot->texture, sampler);
+    raw_ptr<const Sampler> sampler =
+        renderer.GetContext()->GetSamplerLibrary()->GetSampler({});
+    FS::BindYTexture(pass, y_input_snapshot->texture, sampler);
+    FS::BindUvTexture(pass, uv_input_snapshot->texture, sampler);
 
-    FS::BindFragInfo(cmd, host_buffer.EmplaceUniform(frag_info));
-    VS::BindFrameInfo(cmd, host_buffer.EmplaceUniform(frame_info));
+    FS::BindFragInfo(pass, host_buffer.EmplaceUniform(frag_info));
+    VS::BindFrameInfo(pass, host_buffer.EmplaceUniform(frame_info));
 
-    return pass.AddCommand(std::move(cmd));
+    return pass.Draw().ok();
   };
 
   CoverageProc coverage_proc =
@@ -131,7 +131,6 @@ std::optional<Entity> YUVToRGBFilterContents::RenderFilter(
 
   Entity sub_entity;
   sub_entity.SetContents(std::move(contents));
-  sub_entity.SetClipDepth(entity.GetClipDepth());
   sub_entity.SetBlendMode(entity.GetBlendMode());
   return sub_entity;
 }

@@ -4,6 +4,8 @@
 
 package io.flutter.plugin.editing;
 
+import static io.flutter.Build.API_LEVELS;
+
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.Rect;
@@ -27,6 +29,7 @@ import androidx.annotation.VisibleForTesting;
 import androidx.core.view.inputmethod.EditorInfoCompat;
 import io.flutter.Log;
 import io.flutter.embedding.android.KeyboardManager;
+import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel.TextEditState;
 import io.flutter.plugin.platform.PlatformViewsController;
@@ -40,6 +43,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   @NonNull private final View mView;
   @NonNull private final InputMethodManager mImm;
   @NonNull private final AutofillManager afm;
+  @NonNull private final ScribeChannel scribeChannel;
   @NonNull private final TextInputChannel textInputChannel;
   @NonNull private InputTarget inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, 0);
   @Nullable private TextInputChannel.Configuration configuration;
@@ -64,12 +68,13 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   public TextInputPlugin(
       @NonNull View view,
       @NonNull TextInputChannel textInputChannel,
+      @NonNull ScribeChannel scribeChannel,
       @NonNull PlatformViewsController platformViewsController) {
     mView = view;
     // Create a default object.
     mEditable = new ListenableEditingState(null, mView);
     mImm = (InputMethodManager) view.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_26) {
       afm = view.getContext().getSystemService(AutofillManager.class);
     } else {
       afm = null;
@@ -78,20 +83,9 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     // Sets up syncing ime insets with the framework, allowing
     // the Flutter view to grow and shrink to accommodate Android
     // controlled keyboard animations.
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_30) {
       imeSyncCallback = new ImeSyncDeferringInsetsCallback(view);
       imeSyncCallback.install();
-
-      // When the IME is hidden, we need to notify the framework that close connection.
-      imeSyncCallback.setImeVisibleListener(
-          new ImeSyncDeferringInsetsCallback.ImeVisibleListener() {
-            @Override
-            public void onImeVisibleChanged(boolean visible) {
-              if (!visible) {
-                onConnectionClosed();
-              }
-            }
-          });
     }
 
     this.textInputChannel = textInputChannel;
@@ -118,7 +112,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
 
           @Override
           public void finishAutofillContext(boolean shouldSave) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || afm == null) {
+            if (Build.VERSION.SDK_INT < API_LEVELS.API_26 || afm == null) {
               return;
             }
             if (shouldSave) {
@@ -161,6 +155,8 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
         });
 
     textInputChannel.requestExistingInputState();
+
+    this.scribeChannel = scribeChannel;
 
     this.platformViewsController = platformViewsController;
     this.platformViewsController.attachTextInputPlugin(this);
@@ -256,7 +252,8 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       textType |= InputType.TYPE_TEXT_FLAG_MULTI_LINE;
     } else if (type.type == TextInputChannel.TextInputType.EMAIL_ADDRESS) {
       textType |= InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS;
-    } else if (type.type == TextInputChannel.TextInputType.URL) {
+    } else if (type.type == TextInputChannel.TextInputType.URL
+        || type.type == TextInputChannel.TextInputType.WEB_SEARCH) {
       textType |= InputType.TYPE_TEXT_VARIATION_URI;
     } else if (type.type == TextInputChannel.TextInputType.VISIBLE_PASSWORD) {
       textType |= InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
@@ -323,7 +320,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
             configuration.textCapitalization);
     outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN;
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_26
         && !configuration.enableIMEPersonalizedLearning) {
       outAttrs.imeOptions |= EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
     }
@@ -350,9 +347,23 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
       EditorInfoCompat.setContentMimeTypes(outAttrs, imgTypeString);
     }
 
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_34) {
+      EditorInfoCompat.setStylusHandwritingEnabled(outAttrs, true);
+    }
+    // TODO(justinmc): Scribe stylus gestures should be supported here via
+    // outAttrs.setSupportedHandwritingGestures and
+    // outAttrs.setSupportedHandwritingGesturePreviews.
+    // https://github.com/flutter/flutter/issues/156018
+
     InputConnectionAdaptor connection =
         new InputConnectionAdaptor(
-            view, inputTarget.id, textInputChannel, keyboardManager, mEditable, outAttrs);
+            view,
+            inputTarget.id,
+            textInputChannel,
+            scribeChannel,
+            keyboardManager,
+            mEditable,
+            outAttrs);
     outAttrs.initialSelStart = mEditable.getSelectionStart();
     outAttrs.initialSelEnd = mEditable.getSelectionEnd();
 
@@ -387,16 +398,11 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     mImm.sendAppPrivateCommand(mView, action, data);
   }
 
-  private boolean canShowTextInput() {
-    if (configuration == null || configuration.inputType == null) {
-      return true;
-    }
-    return configuration.inputType.type != TextInputChannel.TextInputType.NONE;
-  }
-
   @VisibleForTesting
   void showTextInput(View view) {
-    if (canShowTextInput()) {
+    if (configuration == null
+        || configuration.inputType == null
+        || configuration.inputType.type != TextInputChannel.TextInputType.NONE) {
       view.requestFocus();
       mImm.showSoftInput(view, 0);
     } else {
@@ -420,11 +426,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     // Call notifyViewExited on the previous field.
     notifyViewExited();
     this.configuration = configuration;
-    if (canShowTextInput()) {
-      inputTarget = new InputTarget(InputTarget.Type.FRAMEWORK_CLIENT, client);
-    } else {
-      inputTarget = new InputTarget(InputTarget.Type.NO_TARGET, client);
-    }
+    inputTarget = new InputTarget(InputTarget.Type.FRAMEWORK_CLIENT, client);
 
     mEditable.removeEditingStateListener(this);
     mEditable =
@@ -692,7 +694,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   private void notifyViewEntered() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || afm == null || !needsAutofill()) {
+    if (Build.VERSION.SDK_INT < API_LEVELS.API_26 || afm == null || !needsAutofill()) {
       return;
     }
 
@@ -705,7 +707,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   private void notifyViewExited() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+    if (Build.VERSION.SDK_INT < API_LEVELS.API_26
         || afm == null
         || configuration == null
         || configuration.autofill == null
@@ -718,7 +720,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   private void notifyValueChanged(String newValue) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || afm == null || !needsAutofill()) {
+    if (Build.VERSION.SDK_INT < API_LEVELS.API_26 || afm == null || !needsAutofill()) {
       return;
     }
 
@@ -727,7 +729,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   private void updateAutofillConfigurationIfNeeded(TextInputChannel.Configuration configuration) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+    if (Build.VERSION.SDK_INT < API_LEVELS.API_26) {
       return;
     }
 
@@ -757,7 +759,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   public void onProvideAutofillVirtualStructure(@NonNull ViewStructure structure, int flags) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !needsAutofill()) {
+    if (Build.VERSION.SDK_INT < API_LEVELS.API_26 || !needsAutofill()) {
       return;
     }
 
@@ -805,7 +807,7 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
   }
 
   public void autofill(@NonNull SparseArray<AutofillValue> values) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+    if (Build.VERSION.SDK_INT < API_LEVELS.API_26) {
       return;
     }
 
@@ -840,8 +842,4 @@ public class TextInputPlugin implements ListenableEditingState.EditingStateWatch
     textInputChannel.updateEditingStateWithTag(inputTarget.id, editingValues);
   }
   // -------- End: Autofill -------
-
-  public void onConnectionClosed() {
-    textInputChannel.onConnectionClosed(inputTarget.id);
-  }
 }

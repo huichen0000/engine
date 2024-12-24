@@ -9,9 +9,10 @@ import 'package:path/path.dart' as pathlib;
 // TODO(yjbanov): remove hacks when this is fixed:
 //                https://github.com/dart-lang/test/issues/1521
 import 'package:skia_gold_client/skia_gold_client.dart';
-import 'package:test_api/src/backend/runtime.dart' as hack;
-import 'package:test_core/src/executable.dart' as test;
-import 'package:test_core/src/runner/hack_register_platform.dart' as hack;
+import 'package:test_api/backend.dart' as hack;
+// TODO(ditman): Fix ignores when https://github.com/flutter/flutter/issues/143599 is resolved.
+import 'package:test_core/src/executable.dart' as test; // ignore: implementation_imports
+import 'package:test_core/src/runner/hack_register_platform.dart' as hack; // ignore: implementation_imports
 
 import '../browser.dart';
 import '../common.dart';
@@ -155,12 +156,12 @@ class RunSuiteStep implements PipelineStep {
       throw ToolExit('Could not find built bundle ${suite.testBundle.name.ansiMagenta} for suite ${suite.name.ansiCyan}.');
     }
     final String jsonString = resultsJsonFile.readAsStringSync();
-    final dynamic jsonContents = const JsonDecoder().convert(jsonString);
-    final dynamic results = jsonContents['results'];
+    final jsonContents = const JsonDecoder().convert(jsonString) as Map<String, Object?>;
+    final results = jsonContents['results']! as Map<String, Object?>;
     final List<String> testPaths = <String>[];
-    results.forEach((dynamic k, dynamic v) {
-      final String result = v as String;
-      final String testPath = k as String;
+    results.forEach((Object? k, Object? v) {
+      final String result = v! as String;
+      final String testPath = k! as String;
       if (testFiles != null) {
         if (!testFiles!.contains(FilePath.fromTestSet(suite.testBundle.testSet, testPath))) {
           return;
@@ -175,8 +176,15 @@ class RunSuiteStep implements PipelineStep {
 
   Future<SkiaGoldClient?> _createSkiaClient() async {
     if (suite.testBundle.compileConfigs.length > 1) {
+      print('Not creating skia client due to multiple compile configs');
       // Multiple compile configs are only used for our fallback tests, which
       // do not collect goldens.
+      return null;
+    }
+    if (suite.runConfig.browser == BrowserName.safari) {
+      print('Not creating skia client for Safari');
+      // Goldens from Safari produce too many diffs, disabled for now.
+      // See https://github.com/flutter/flutter/issues/143591
       return null;
     }
     final Renderer renderer = suite.testBundle.compileConfigs.first.renderer;
@@ -186,17 +194,26 @@ class RunSuiteStep implements PipelineStep {
       workDirectory.deleteSync(recursive: true);
     }
     final bool isWasm = suite.testBundle.compileConfigs.first.compiler == Compiler.dart2wasm;
+    final bool singleThreaded = suite.runConfig.forceSingleThreadedSkwasm || !suite.runConfig.crossOriginIsolated;
+    final String rendererName = switch (renderer) {
+      Renderer.skwasm => singleThreaded ? 'skwasm_st' : 'skwasm',
+      _ => renderer.name,
+    };
+
+    final dimensions = <String, String> {
+      'Browser': suite.runConfig.browser.name,
+      if (isWasm) 'Wasm': 'true',
+      'Renderer': rendererName,
+      if (variant != null) 'CanvasKitVariant': variant.name,
+    };
+    print('Created Skia Gold Client. dimensions: $dimensions');
     final SkiaGoldClient skiaClient = SkiaGoldClient(
       workDirectory,
-      dimensions: <String, String> {
-        'Browser': suite.runConfig.browser.name,
-        if (isWasm) 'Wasm': 'true',
-        'Renderer': renderer.name,
-        if (variant != null) 'CanvasKitVariant': variant.name,
-      },
+      dimensions: dimensions,
     );
 
     if (await _checkSkiaClient(skiaClient)) {
+      print('Successfully checked Skia Gold Client');
       return skiaClient;
     }
 
@@ -211,7 +228,7 @@ class RunSuiteStep implements PipelineStep {
   Future<bool> _checkSkiaClient(SkiaGoldClient skiaClient) async {
     // Now let's check whether Skia Gold is reachable or not.
     if (isLuci) {
-      if (isSkiaGoldClientAvailable) {
+      if (SkiaGoldClient.isAvailable()) {
         try {
           await skiaClient.auth();
           return true;

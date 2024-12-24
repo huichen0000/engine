@@ -5,7 +5,9 @@
 #ifndef FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_SAMPLER_LIBRARY_GLES_H_
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_SAMPLER_LIBRARY_GLES_H_
 
+#include "impeller/core/sampler.h"
 #include "impeller/core/sampler_descriptor.h"
+#include "impeller/renderer/backend/gles/sampler_gles.h"
 #include "impeller/renderer/sampler_library.h"
 
 namespace impeller {
@@ -19,13 +21,13 @@ class SamplerLibraryGLES final : public SamplerLibrary {
  private:
   friend class ContextGLES;
 
-  SamplerMap samplers_;
+  std::vector<std::pair<uint64_t, std::shared_ptr<const Sampler>>> samplers_;
 
   SamplerLibraryGLES();
 
   // |SamplerLibrary|
-  std::shared_ptr<const Sampler> GetSampler(
-      SamplerDescriptor descriptor) override;
+  raw_ptr<const Sampler> GetSampler(
+      const SamplerDescriptor& descriptor) override;
 
   bool supports_decal_sampler_address_mode_ = false;
 

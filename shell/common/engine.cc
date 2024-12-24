@@ -10,17 +10,12 @@
 #include <utility>
 #include <vector>
 
+#include "flutter/assets/native_assets.h"
 #include "flutter/common/settings.h"
-#include "flutter/fml/make_copyable.h"
 #include "flutter/fml/trace_event.h"
-#include "flutter/lib/snapshot/snapshot.h"
 #include "flutter/lib/ui/text/font_collection.h"
 #include "flutter/shell/common/animator.h"
-#include "flutter/shell/common/platform_view.h"
-#include "flutter/shell/common/shell.h"
-#include "impeller/runtime_stage/runtime_stage.h"
 #include "rapidjson/document.h"
-#include "third_party/dart/runtime/include/dart_tools_api.h"
 
 namespace flutter {
 
@@ -40,11 +35,11 @@ fml::MallocMapping MakeMapping(const std::string& str) {
 Engine::Engine(
     Delegate& delegate,
     const PointerDataDispatcherMaker& dispatcher_maker,
-    std::shared_ptr<fml::ConcurrentTaskRunner> image_decoder_task_runner,
+    const std::shared_ptr<fml::ConcurrentTaskRunner>& image_decoder_task_runner,
     const TaskRunners& task_runners,
     const Settings& settings,
     std::unique_ptr<Animator> animator,
-    fml::WeakPtr<IOManager> io_manager,
+    const fml::WeakPtr<IOManager>& io_manager,
     const std::shared_ptr<FontCollection>& font_collection,
     std::unique_ptr<RuntimeController> runtime_controller,
     const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch)
@@ -55,8 +50,8 @@ Engine::Engine(
       font_collection_(font_collection),
       image_decoder_(ImageDecoder::Make(settings_,
                                         task_runners,
-                                        std::move(image_decoder_task_runner),
-                                        std::move(io_manager),
+                                        image_decoder_task_runner,
+                                        io_manager,
                                         gpu_disabled_switch)),
       task_runners_(task_runners),
       weak_factory_(this) {
@@ -72,9 +67,8 @@ Engine::Engine(Delegate& delegate,
                const Settings& settings,
                std::unique_ptr<Animator> animator,
                fml::WeakPtr<IOManager> io_manager,
-               fml::RefPtr<SkiaUnrefQueue> unref_queue,
+               const fml::RefPtr<SkiaUnrefQueue>& unref_queue,
                fml::TaskRunnerAffineWeakPtr<SnapshotDelegate> snapshot_delegate,
-               std::shared_ptr<VolatilePathTracker> volatile_path_tracker,
                const std::shared_ptr<fml::SyncSwitch>& gpu_disabled_switch,
                impeller::RuntimeStageBackend runtime_stage_type)
     : Engine(delegate,
@@ -100,15 +94,16 @@ Engine::Engine(Delegate& delegate,
           task_runners_,                           // task runners
           std::move(snapshot_delegate),            // snapshot delegate
           std::move(io_manager),                   // io manager
-          std::move(unref_queue),                  // Skia unref queue
+          unref_queue,                             // Skia unref queue
           image_decoder_->GetWeakPtr(),            // image decoder
           image_generator_registry_.GetWeakPtr(),  // image generator registry
           settings_.advisory_script_uri,           // advisory script uri
           settings_.advisory_script_entrypoint,    // advisory script entrypoint
-          std::move(volatile_path_tracker),        // volatile path tracker
-          vm.GetConcurrentWorkerTaskRunner(),      // concurrent task runner
-          settings_.enable_impeller,               // enable impeller
-          runtime_stage_type,                      // runtime stage type
+          settings_
+              .skia_deterministic_rendering_on_cpu,  // deterministic rendering
+          vm.GetConcurrentWorkerTaskRunner(),        // concurrent task runner
+          settings_.enable_impeller,                 // enable impeller
+          runtime_stage_type,                        // runtime stage type
       });
 }
 
@@ -146,6 +141,7 @@ std::unique_ptr<Engine> Engine::Spawn(
       /*image_generator_registry=*/result->GetImageGeneratorRegistry(),
       /*snapshot_delegate=*/std::move(snapshot_delegate));
   result->initial_route_ = initial_route;
+  result->asset_manager_ = asset_manager_;
   return result;
 }
 
@@ -174,7 +170,8 @@ fml::WeakPtr<ImageGeneratorRegistry> Engine::GetImageGeneratorRegistry() {
 
 bool Engine::UpdateAssetManager(
     const std::shared_ptr<AssetManager>& new_asset_manager) {
-  if (asset_manager_ == new_asset_manager) {
+  if (asset_manager_ && new_asset_manager &&
+      *asset_manager_ == *new_asset_manager) {
     return false;
   }
 
@@ -192,6 +189,11 @@ bool Engine::UpdateAssetManager(
   if (settings_.use_test_fonts) {
     font_collection_->RegisterTestFonts();
   }
+
+  if (native_assets_manager_ == nullptr) {
+    native_assets_manager_ = std::make_shared<NativeAssetsManager>();
+  }
+  native_assets_manager_->RegisterNativeAssets(asset_manager_);
 
   return true;
 }
@@ -242,7 +244,8 @@ Engine::RunStatus Engine::Run(RunConfiguration configuration) {
           configuration.GetEntrypoint(),             //
           configuration.GetEntrypointLibrary(),      //
           configuration.GetEntrypointArgs(),         //
-          configuration.TakeIsolateConfiguration())  //
+          configuration.TakeIsolateConfiguration(),  //
+          native_assets_manager_)                    //
   ) {
     return RunStatus::Failure;
   }
@@ -291,16 +294,22 @@ bool Engine::UIIsolateHasLivePorts() {
   return runtime_controller_->HasLivePorts();
 }
 
+bool Engine::UIIsolateHasPendingMicrotasks() {
+  return runtime_controller_->HasPendingMicrotasks();
+}
+
 tonic::DartErrorHandleType Engine::GetUIIsolateLastError() {
   return runtime_controller_->GetLastError();
 }
 
-void Engine::AddView(int64_t view_id, const ViewportMetrics& view_metrics) {
-  runtime_controller_->AddView(view_id, view_metrics);
+void Engine::AddView(int64_t view_id,
+                     const ViewportMetrics& view_metrics,
+                     std::function<void(bool added)> callback) {
+  runtime_controller_->AddView(view_id, view_metrics, std::move(callback));
 }
 
-void Engine::RemoveView(int64_t view_id) {
-  runtime_controller_->RemoveView(view_id);
+bool Engine::RemoveView(int64_t view_id) {
+  return runtime_controller_->RemoveView(view_id);
 }
 
 void Engine::SetViewportMetrics(int64_t view_id,
@@ -462,18 +471,23 @@ void Engine::ScheduleFrame(bool regenerate_layer_trees) {
   animator_->RequestFrame(regenerate_layer_trees);
 }
 
-void Engine::Render(std::unique_ptr<flutter::LayerTree> layer_tree,
+void Engine::OnAllViewsRendered() {
+  animator_->OnAllViewsRendered();
+}
+
+void Engine::Render(int64_t view_id,
+                    std::unique_ptr<flutter::LayerTree> layer_tree,
                     float device_pixel_ratio) {
   if (!layer_tree) {
     return;
   }
 
   // Ensure frame dimensions are sane.
-  if (layer_tree->frame_size().isEmpty() || device_pixel_ratio <= 0.0f) {
+  if (layer_tree->frame_size().IsEmpty() || device_pixel_ratio <= 0.0f) {
     return;
   }
 
-  animator_->Render(std::move(layer_tree), device_pixel_ratio);
+  animator_->Render(view_id, std::move(layer_tree), device_pixel_ratio);
 }
 
 void Engine::UpdateSemantics(SemanticsNodeUpdates update,
@@ -607,6 +621,10 @@ const std::weak_ptr<VsyncWaiter> Engine::GetVsyncWaiter() const {
 void Engine::SetDisplays(const std::vector<DisplayData>& displays) {
   runtime_controller_->SetDisplays(displays);
   ScheduleFrame();
+}
+
+void Engine::ShutdownPlatformIsolates() {
+  runtime_controller_->ShutdownPlatformIsolates();
 }
 
 }  // namespace flutter

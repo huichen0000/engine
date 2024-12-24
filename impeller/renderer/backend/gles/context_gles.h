@@ -6,6 +6,7 @@
 #define FLUTTER_IMPELLER_RENDERER_BACKEND_GLES_CONTEXT_GLES_H_
 
 #include "impeller/base/backend_cast.h"
+#include "impeller/core/runtime_types.h"
 #include "impeller/renderer/backend/gles/allocator_gles.h"
 #include "impeller/renderer/backend/gles/capabilities_gles.h"
 #include "impeller/renderer/backend/gles/gpu_tracer_gles.h"
@@ -14,6 +15,7 @@
 #include "impeller/renderer/backend/gles/sampler_library_gles.h"
 #include "impeller/renderer/backend/gles/shader_library_gles.h"
 #include "impeller/renderer/capabilities.h"
+#include "impeller/renderer/command_queue.h"
 #include "impeller/renderer/context.h"
 
 namespace impeller {
@@ -33,7 +35,7 @@ class ContextGLES final : public Context,
   // |Context|
   BackendType GetBackendType() const override;
 
-  const ReactorGLES::Ref& GetReactor() const;
+  const std::shared_ptr<ReactorGLES>& GetReactor() const;
 
   std::optional<ReactorGLES::WorkerID> AddReactorWorker(
       const std::shared_ptr<ReactorGLES::Worker>& worker);
@@ -43,11 +45,12 @@ class ContextGLES final : public Context,
   std::shared_ptr<GPUTracerGLES> GetGPUTracer() const { return gpu_tracer_; }
 
  private:
-  ReactorGLES::Ref reactor_;
+  std::shared_ptr<ReactorGLES> reactor_;
   std::shared_ptr<ShaderLibraryGLES> shader_library_;
   std::shared_ptr<PipelineLibraryGLES> pipeline_library_;
   std::shared_ptr<SamplerLibraryGLES> sampler_library_;
   std::shared_ptr<AllocatorGLES> resource_allocator_;
+  std::shared_ptr<CommandQueue> command_queue_;
   std::shared_ptr<GPUTracerGLES> gpu_tracer_;
 
   // Note: This is stored separately from the ProcTableGLES CapabilitiesGLES
@@ -86,7 +89,26 @@ class ContextGLES final : public Context,
   const std::shared_ptr<const Capabilities>& GetCapabilities() const override;
 
   // |Context|
+  std::shared_ptr<CommandQueue> GetCommandQueue() const override;
+
+  // |Context|
   void Shutdown() override;
+
+  // |Context|
+  bool AddTrackingFence(const std::shared_ptr<Texture>& texture) const override;
+
+  // |Context|
+  void ResetThreadLocalState() const override;
+
+  // |Context|
+  [[nodiscard]] bool EnqueueCommandBuffer(
+      std::shared_ptr<CommandBuffer> command_buffer) override;
+
+  // |Context|
+  [[nodiscard]] bool FlushCommandBuffers() override;
+
+  // |Context|
+  RuntimeStageBackend GetRuntimeStageBackend() const override;
 
   ContextGLES(const ContextGLES&) = delete;
 

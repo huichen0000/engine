@@ -55,7 +55,8 @@ TEST_P(CompilerTest, CanCompileHLSLWithMultipleStages) {
 
 TEST_P(CompilerTest, CanCompileComputeShader) {
   if (!TargetPlatformIsMetal(GetParam())) {
-    GTEST_SKIP_("Only enabled on Metal backends till ES 3.2 support is added.");
+    GTEST_SKIP()
+        << "Only enabled on Metal backends till ES 3.2 support is added.";
   }
   ASSERT_TRUE(CanCompileAndReflect("sample.comp"));
   ASSERT_TRUE(CanCompileAndReflect("sample.comp", SourceType::kComputeShader));
@@ -135,11 +136,21 @@ TEST_P(CompilerTest, SkSLTextureLookUpOrderOfOperations) {
       CanCompileAndReflect("texture_lookup.frag", SourceType::kFragmentShader));
 
   auto shader = GetShaderFile("texture_lookup.frag", GetParam());
-  auto string_mapping = reinterpret_cast<const char*>(shader->GetMapping());
+  std::string_view shader_mapping(
+      reinterpret_cast<const char*>(shader->GetMapping()), shader->GetSize());
 
-  EXPECT_TRUE(strcmp(string_mapping,
-                     "textureA.eval(textureA_size * ( vec2(1.0) + "
-                     "flutter_FragCoord.xy));") != -1);
+  constexpr std::string_view expected =
+      "textureA.eval(textureA_size * ( vec2(1.0) + flutter_FragCoord.xy));";
+
+  EXPECT_NE(shader_mapping.find(expected), std::string::npos);
+}
+
+TEST_P(CompilerTest, CanCompileStructs) {
+  if (GetParam() != TargetPlatform::kSkSL) {
+    GTEST_SKIP() << "Only supported on SkSL";
+  }
+  ASSERT_TRUE(CanCompileAndReflect("struct_internal.frag",
+                                   SourceType::kFragmentShader));
 }
 
 #define INSTANTIATE_TARGET_PLATFORM_TEST_SUITE_P(suite_name)               \

@@ -60,7 +60,7 @@ class ScopedGlobalMemory {
     memory_ = ::GlobalAlloc(flags, bytes);
     if (!memory_) {
       FML_LOG(ERROR) << "Unable to allocate global memory: "
-                     << ::GetLastError();
+                     << static_cast<int>(::GetLastError());
     }
   }
 
@@ -68,7 +68,7 @@ class ScopedGlobalMemory {
     if (memory_) {
       if (::GlobalFree(memory_) != nullptr) {
         FML_LOG(ERROR) << "Failed to free global allocation: "
-                       << ::GetLastError();
+                       << static_cast<int>(::GetLastError());
       }
     }
   }
@@ -175,12 +175,12 @@ std::variant<std::wstring, int> ScopedClipboard::GetString() {
 
   HANDLE data = ::GetClipboardData(CF_UNICODETEXT);
   if (data == nullptr) {
-    return ::GetLastError();
+    return static_cast<int>(::GetLastError());
   }
   ScopedGlobalLock locked_data(data);
 
   if (!locked_data.get()) {
-    return ::GetLastError();
+    return static_cast<int>(::GetLastError());
   }
   return static_cast<wchar_t*>(locked_data.get());
 }
@@ -248,7 +248,9 @@ PlatformHandler::~PlatformHandler() = default;
 void PlatformHandler::GetPlainText(
     std::unique_ptr<MethodResult<rapidjson::Document>> result,
     std::string_view key) {
-  const FlutterWindowsView* view = engine_->view();
+  // TODO(loicsharma): Remove implicit view assumption.
+  // https://github.com/flutter/flutter/issues/142845
+  const FlutterWindowsView* view = engine_->view(kImplicitViewId);
   if (view == nullptr) {
     result->Error(kClipboardError,
                   "Clipboard is not available in Windows headless mode");
@@ -291,7 +293,9 @@ void PlatformHandler::GetPlainText(
 
 void PlatformHandler::GetHasStrings(
     std::unique_ptr<MethodResult<rapidjson::Document>> result) {
-  const FlutterWindowsView* view = engine_->view();
+  // TODO(loicsharma): Remove implicit view assumption.
+  // https://github.com/flutter/flutter/issues/142845
+  const FlutterWindowsView* view = engine_->view(kImplicitViewId);
   if (view == nullptr) {
     result->Error(kClipboardError,
                   "Clipboard is not available in Windows headless mode");
@@ -329,7 +333,9 @@ void PlatformHandler::GetHasStrings(
 void PlatformHandler::SetPlainText(
     const std::string& text,
     std::unique_ptr<MethodResult<rapidjson::Document>> result) {
-  const FlutterWindowsView* view = engine_->view();
+  // TODO(loicsharma): Remove implicit view assumption.
+  // https://github.com/flutter/flutter/issues/142845
+  const FlutterWindowsView* view = engine_->view(kImplicitViewId);
   if (view == nullptr) {
     result->Error(kClipboardError,
                   "Clipboard is not available in Windows headless mode");

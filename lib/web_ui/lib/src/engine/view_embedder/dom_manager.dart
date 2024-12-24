@@ -8,7 +8,6 @@ import '../configuration.dart';
 import '../dom.dart';
 import '../platform_views/content_manager.dart';
 import '../safe_browser_api.dart';
-import '../semantics/semantics.dart';
 import 'style_manager.dart';
 
 /// Manages DOM elements and the DOM structure for a [ui.FlutterView].
@@ -27,8 +26,6 @@ import 'style_manager.dart';
 ///   |    |    |    |
 ///   |    |    |    +- <flt-scene>
 ///   |    |    |
-///   |    |    +- [announcementsHost] <flt-announcement-host>
-///   |    |    |
 ///   |    |    +- <style>
 ///   |    |
 ///   |    +- ...platform views
@@ -44,24 +41,13 @@ import 'style_manager.dart';
 ///   +- <style>
 ///
 class DomManager {
-  factory DomManager({required int viewId, required double devicePixelRatio}) {
+  factory DomManager({required double devicePixelRatio}) {
     final DomElement rootElement = domDocument.createElement(DomManager.flutterViewTagName);
     final DomElement platformViewsHost = domDocument.createElement(DomManager.glassPaneTagName);
     final DomShadowRoot renderingHost = _attachShadowRoot(platformViewsHost);
     final DomElement sceneHost = domDocument.createElement(DomManager.sceneHostTagName);
     final DomElement textEditingHost = domDocument.createElement(DomManager.textEditingHostTagName);
     final DomElement semanticsHost = domDocument.createElement(DomManager.semanticsHostTagName);
-    final DomElement announcementsHost = createDomElement(DomManager.announcementsHostTagName);
-
-    // This `flt-view-id` attribute does not serve a function in the engine's
-    // operation, but it's useful for debugging, test automation, and DOM
-    // interop use-cases. It allows one to use CSS selectors to find views by
-    // their identifiers.
-    //
-    // Example:
-    //
-    //     document.querySelector('flutter-view[flt-view-id="$viewId"]')
-    rootElement.setAttribute('flt-view-id', viewId);
 
     // Root element children.
     rootElement.appendChild(platformViewsHost);
@@ -81,13 +67,7 @@ class DomManager {
 
     // Rendering host (shadow root) children.
 
-    final DomElement accessibilityPlaceholder = EngineSemantics
-        .instance.semanticsHelper
-        .prepareAccessibilityPlaceholder();
-
-    renderingHost.append(accessibilityPlaceholder);
     renderingHost.append(sceneHost);
-    renderingHost.append(announcementsHost);
 
     // Styling.
 
@@ -122,7 +102,6 @@ class DomManager {
       sceneHost: sceneHost,
       textEditingHost: textEditingHost,
       semanticsHost: semanticsHost,
-      announcementsHost: announcementsHost,
     );
   }
 
@@ -133,7 +112,6 @@ class DomManager {
     required this.sceneHost,
     required this.textEditingHost,
     required this.semanticsHost,
-    required this.announcementsHost,
   });
 
   /// The tag name for the Flutter View root element.
@@ -150,9 +128,6 @@ class DomManager {
 
   /// The tag name for the semantics host.
   static const String semanticsHostTagName = 'flt-semantics-host';
-
-  /// The tag name for the accessibility announcements host.
-  static const String announcementsHostTagName = 'flt-announcement-host';
 
   /// The root DOM element for the entire Flutter View.
   ///
@@ -183,9 +158,6 @@ class DomManager {
   /// Otherwise, the phone will disable focusing by touch, only by tabbing
   /// around the UI.
   final DomElement semanticsHost;
-
-  /// This is where accessibility announcements are inserted.
-  final DomElement announcementsHost;
 
   DomElement? _lastSceneElement;
 

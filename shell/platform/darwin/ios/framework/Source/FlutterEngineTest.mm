@@ -69,6 +69,17 @@ FLUTTER_ASSERT_ARC
   XCTAssertNotNil(engine);
 }
 
+- (void)testShellGetters {
+  FlutterDartProject* project = [[FlutterDartProject alloc] init];
+  FlutterEngine* engine = [[FlutterEngine alloc] initWithName:@"foobar" project:project];
+  XCTAssertNotNil(engine);
+
+  // Ensure getters don't deref _shell when it's null, and instead return nullptr.
+  XCTAssertEqual(engine.platformTaskRunner.get(), nullptr);
+  XCTAssertEqual(engine.uiTaskRunner.get(), nullptr);
+  XCTAssertEqual(engine.rasterTaskRunner.get(), nullptr);
+}
+
 - (void)testInfoPlist {
   // Check the embedded Flutter.framework Info.plist, not the linked dylib.
   NSURL* flutterFrameworkURL =
@@ -239,17 +250,6 @@ FLUTTER_ASSERT_ARC
   XCTAssertEqual(renderingApi, flutter::IOSRenderingAPI::kMetal);
 }
 
-- (void)testPlatformViewsControllerRenderingSoftware {
-  auto settings = FLTDefaultSettingsForBundle();
-  settings.enable_software_rendering = true;
-  FlutterDartProject* project = [[FlutterDartProject alloc] initWithSettings:settings];
-  FlutterEngine* engine = [[FlutterEngine alloc] initWithName:@"foobar" project:project];
-  [engine run];
-  flutter::IOSRenderingAPI renderingApi = [engine platformViewsRenderingAPI];
-
-  XCTAssertEqual(renderingApi, flutter::IOSRenderingAPI::kSoftware);
-}
-
 - (void)testWaitForFirstFrameTimeout {
   FlutterEngine* engine = [[FlutterEngine alloc] initWithName:@"foobar"];
   [engine run];
@@ -260,7 +260,7 @@ FLUTTER_ASSERT_ARC
                        [timeoutFirstFrame fulfill];
                      }
                    }];
-  [self waitForExpectationsWithTimeout:5 handler:nil];
+  [self waitForExpectations:@[ timeoutFirstFrame ]];
 }
 
 - (void)testSpawn {
@@ -273,23 +273,6 @@ FLUTTER_ASSERT_ARC
   XCTAssertNotNil(spawn);
 }
 
-- (void)testDeallocNotification {
-  XCTestExpectation* deallocNotification = [self expectationWithDescription:@"deallocNotification"];
-  NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
-  id<NSObject> observer;
-  @autoreleasepool {
-    FlutterEngine* engine = [[FlutterEngine alloc] initWithName:@"foobar"];
-    observer = [center addObserverForName:kFlutterEngineWillDealloc
-                                   object:engine
-                                    queue:[NSOperationQueue mainQueue]
-                               usingBlock:^(NSNotification* note) {
-                                 [deallocNotification fulfill];
-                               }];
-  }
-  [self waitForExpectationsWithTimeout:1 handler:nil];
-  [center removeObserver:observer];
-}
-
 - (void)testSetHandlerAfterRun {
   FlutterEngine* engine = [[FlutterEngine alloc] initWithName:@"foobar"];
   XCTestExpectation* gotMessage = [self expectationWithDescription:@"gotMessage"];
@@ -298,31 +281,29 @@ FLUTTER_ASSERT_ARC
     fml::AutoResetWaitableEvent latch;
     [engine run];
     flutter::Shell& shell = engine.shell;
-    engine.shell.GetTaskRunners().GetUITaskRunner()->PostTask([&latch, &shell] {
-      flutter::Engine::Delegate& delegate = shell;
-      auto message = std::make_unique<flutter::PlatformMessage>("foo", nullptr);
-      delegate.OnEngineHandlePlatformMessage(std::move(message));
-      latch.Signal();
-    });
+    fml::TaskRunner::RunNowOrPostTask(
+        engine.shell.GetTaskRunners().GetUITaskRunner(), [&latch, &shell] {
+          flutter::Engine::Delegate& delegate = shell;
+          auto message = std::make_unique<flutter::PlatformMessage>("foo", nullptr);
+          delegate.OnEngineHandlePlatformMessage(std::move(message));
+          latch.Signal();
+        });
     latch.Wait();
     [registrar.messenger setMessageHandlerOnChannel:@"foo"
                                binaryMessageHandler:^(NSData* message, FlutterBinaryReply reply) {
                                  [gotMessage fulfill];
                                }];
   });
-  [self waitForExpectationsWithTimeout:1 handler:nil];
+  [self waitForExpectations:@[ gotMessage ]];
 }
 
 - (void)testThreadPrioritySetCorrectly {
   XCTestExpectation* prioritiesSet = [self expectationWithDescription:@"prioritiesSet"];
-  prioritiesSet.expectedFulfillmentCount = 3;
+  prioritiesSet.expectedFulfillmentCount = 2;
 
   IMP mockSetThreadPriority =
       imp_implementationWithBlock(^(NSThread* thread, double threadPriority) {
-        if ([thread.name hasSuffix:@".ui"]) {
-          XCTAssertEqual(threadPriority, 1.0);
-          [prioritiesSet fulfill];
-        } else if ([thread.name hasSuffix:@".raster"]) {
+        if ([thread.name hasSuffix:@".raster"]) {
           XCTAssertEqual(threadPriority, 1.0);
           [prioritiesSet fulfill];
         } else if ([thread.name hasSuffix:@".io"]) {
@@ -336,7 +317,7 @@ FLUTTER_ASSERT_ARC
 
   FlutterEngine* engine = [[FlutterEngine alloc] init];
   [engine run];
-  [self waitForExpectationsWithTimeout:1 handler:nil];
+  [self waitForExpectations:@[ prioritiesSet ]];
 
   method_setImplementation(method, originalSetThreadPriority);
 }
@@ -452,15 +433,11 @@ FLUTTER_ASSERT_ARC
                                         initialRoute:nil
                                       entrypointArgs:nil];
   XCTAssertNotNil(spawn);
-  XCTAssertTrue([engine iosPlatformView] != nullptr);
-  XCTAssertTrue([spawn iosPlatformView] != nullptr);
-  std::shared_ptr<flutter::IOSContext> engine_context = [engine iosPlatformView]->GetIosContext();
-  std::shared_ptr<flutter::IOSContext> spawn_context = [spawn iosPlatformView]->GetIosContext();
+  XCTAssertTrue(engine.platformView != nullptr);
+  XCTAssertTrue(spawn.platformView != nullptr);
+  std::shared_ptr<flutter::IOSContext> engine_context = engine.platformView->GetIosContext();
+  std::shared_ptr<flutter::IOSContext> spawn_context = spawn.platformView->GetIosContext();
   XCTAssertEqual(engine_context, spawn_context);
-  // If this assert fails it means we may be using the software.  For software rendering, this is
-  // expected to be nullptr.
-  XCTAssertTrue(engine_context->GetMainContext() != nullptr);
-  XCTAssertEqual(engine_context->GetMainContext(), spawn_context->GetMainContext());
 }
 
 - (void)testEnableSemanticsWhenFlutterViewAccessibilityDidCall {
@@ -468,6 +445,31 @@ FLUTTER_ASSERT_ARC
   engine.ensureSemanticsEnabledCalled = NO;
   [engine flutterViewAccessibilityDidCall];
   XCTAssertTrue(engine.ensureSemanticsEnabledCalled);
+}
+
+- (void)testCanMergePlatformAndUIThread {
+#if defined(TARGET_IPHONE_SIMULATOR) && TARGET_IPHONE_SIMULATOR
+  auto settings = FLTDefaultSettingsForBundle();
+  FlutterDartProject* project = [[FlutterDartProject alloc] initWithSettings:settings];
+  FlutterEngine* engine = [[FlutterEngine alloc] initWithName:@"foobar" project:project];
+  [engine run];
+
+  XCTAssertEqual(engine.shell.GetTaskRunners().GetUITaskRunner(),
+                 engine.shell.GetTaskRunners().GetPlatformTaskRunner());
+#endif  // defined(TARGET_IPHONE_SIMULATOR) && TARGET_IPHONE_SIMULATOR
+}
+
+- (void)testCanUnMergePlatformAndUIThread {
+#if defined(TARGET_IPHONE_SIMULATOR) && TARGET_IPHONE_SIMULATOR
+  auto settings = FLTDefaultSettingsForBundle();
+  settings.merged_platform_ui_thread = false;
+  FlutterDartProject* project = [[FlutterDartProject alloc] initWithSettings:settings];
+  FlutterEngine* engine = [[FlutterEngine alloc] initWithName:@"foobar" project:project];
+  [engine run];
+
+  XCTAssertNotEqual(engine.shell.GetTaskRunners().GetUITaskRunner(),
+                    engine.shell.GetTaskRunners().GetPlatformTaskRunner());
+#endif  // defined(TARGET_IPHONE_SIMULATOR) && TARGET_IPHONE_SIMULATOR
 }
 
 @end

@@ -7,10 +7,8 @@
 
 #include <memory>
 
-#include "flutter/fml/macros.h"
 #include "flutter/testing/test_args.h"
 #include "flutter/testing/testing.h"
-#include "impeller/geometry/scalar.h"
 #include "impeller/playground/playground.h"
 #include "impeller/playground/switches.h"
 
@@ -44,7 +42,7 @@ class PlaygroundTest : public Playground,
 
  private:
   // |Playground|
-  bool ShouldKeepRendering() const;
+  bool ShouldKeepRendering() const override;
 
 #if FML_OS_MACOSX
   fml::ScopedNSAutoreleasePool autorelease_pool_;
@@ -63,6 +61,33 @@ class PlaygroundTest : public Playground,
       ::testing::Values(PlaygroundBackend::kMetal,                           \
                         PlaygroundBackend::kOpenGLES,                        \
                         PlaygroundBackend::kVulkan),                         \
+      [](const ::testing::TestParamInfo<PlaygroundTest::ParamType>& info) {  \
+        return PlaygroundBackendToString(info.param);                        \
+      });
+
+#define INSTANTIATE_METAL_PLAYGROUND_SUITE(playground)                       \
+  [[maybe_unused]] const char* kYouInstantiated##playground##MultipleTimes = \
+      "";                                                                    \
+  INSTANTIATE_TEST_SUITE_P(                                                  \
+      Play, playground, ::testing::Values(PlaygroundBackend::kMetal),        \
+      [](const ::testing::TestParamInfo<PlaygroundTest::ParamType>& info) {  \
+        return PlaygroundBackendToString(info.param);                        \
+      });
+
+#define INSTANTIATE_VULKAN_PLAYGROUND_SUITE(playground)                      \
+  [[maybe_unused]] const char* kYouInstantiated##playground##MultipleTimes = \
+      "";                                                                    \
+  INSTANTIATE_TEST_SUITE_P(                                                  \
+      Play, playground, ::testing::Values(PlaygroundBackend::kVulkan),       \
+      [](const ::testing::TestParamInfo<PlaygroundTest::ParamType>& info) {  \
+        return PlaygroundBackendToString(info.param);                        \
+      });
+
+#define INSTANTIATE_OPENGLES_PLAYGROUND_SUITE(playground)                    \
+  [[maybe_unused]] const char* kYouInstantiated##playground##MultipleTimes = \
+      "";                                                                    \
+  INSTANTIATE_TEST_SUITE_P(                                                  \
+      Play, playground, ::testing::Values(PlaygroundBackend::kOpenGLES),     \
       [](const ::testing::TestParamInfo<PlaygroundTest::ParamType>& info) {  \
         return PlaygroundBackendToString(info.param);                        \
       });

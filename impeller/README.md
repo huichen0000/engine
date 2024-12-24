@@ -11,7 +11,7 @@
 --------------------------------------------------------------------------------
 ```
 
-![Impeller](docs/assets/showcase.png)
+![Impeller](https://raw.githubusercontent.com/flutter/assets-for-api-docs//5da33067f5cfc7f177d9c460d618397aad9082ca/assets/engine/impeller/showcase.avif)
 
 Impeller is a rendering runtime for Flutter with the following objectives:
 
@@ -60,12 +60,6 @@ states of completion:
       for a specific client rendering API. The interfaces in these targets are
       meant to be private for non-WSI user targets. No Impeller sub-frameworks
       may depend on these targets.
-* **`//impeller/archivist`**: Allows persisting objects to disk as performantly
-  as possible (usually on a background thread). The framework is meant to be
-  used for storing frame meta-data and related profiling/instrumentation
-  information. Collection of information should succeed despite process crashes
-  and retrieval of traces must not use inordinate amounts of time or memory
-  (which usually leads to crashes).
 * **`//impeller/geometry`**: All (or, most of) the math! This C++ mathematics
   library is used extensively by Impeller and its clients. The reasonably
   interesting bit about this library is that all types can be used
@@ -87,14 +81,6 @@ states of completion:
   framework. The render-pass optimization and pass-rewriting framework also
   resides there. This allows authoring composable 2D rendering optimizations
   (like collapsing passes, or, eliding them completely).
-* **`//impeller/aiks`**: Aiks wraps `//impeller/entity` into an API that
-  resembles Skia. This makes it easy to mechanically replace Skia calls with
-  their Impeller counterparts even though the `//impeller/entity` framework API
-  is different from Skia. This presence of this sub-framework is probably
-  short-lived as integration of Impeller into Flutter should likely happen via a
-  custom Display List implementation in `//impeller/display_list`. The
-  roadblocks to this today are graphics package agnosticism in the Display List
-  interface.
 * **`//impeller/display_list`**: The replacement for `//impeller/aiks` to serve
   in the integration of Impeller in `//flutter/flow`. This is pending graphics
   package agnosticism in the Impeller interface. This sub-framework primarily
@@ -112,13 +98,6 @@ states of completion:
 * **`//impeller/base`**: Contains C++ utilities that are used throughout the
   Impeller family of frameworks. Ideally, these should go in `//flutter/fml` but
   their use is probably not widespread enough to at this time.
-* **`//impeller/image`**: The Impeller renderer works with textures whose memory
-  is resident in device memory. However, pending the migration of
-  `//flutter/display_list` to graphics package agnosticism and the subsequent
-  migration of the image decoders to work with the package agnostic types, there
-  needs to be a way for tests and such to decode compressed image data. This
-  sub-framework provides that functionality. This sub-framework is slated for
-  removal and must not be used outside of tests.
 * **`//fixtures`**: Contains test fixtures used by the various test harnesses.
   This depends on `//flutter/testing`.
 * **`//impeller/tools`**: Contains all GN rules and python scripts for working
@@ -137,9 +116,6 @@ states of completion:
   pre-compiled shaders themselves. Unlike Metal, backends like OpenGL ES and
   Vulkan don't have such a concept. For these backends, `//impeller/blobcat` is
   used to create a single shader library to be packaged with the engine.
-* **`//impeller/scene`**: Contains an experimental 3D model renderer. This is
-  currently only exposed via [a special build of the Flutter
-  Engine](https://github.com/flutter/flutter/wiki/Impeller-Scene).
 
 ## The Offline Shader Compilation Pipeline
 
@@ -188,9 +164,6 @@ flowchart TD
 
     spirv -- Reflector --> cxx_sources[C++ Sources]
     cxx_sources -- Ninja Build --> cxx_library[C++ Library]
-
-    vulkan_shader_archive -- Multi Arch Archiver --> multi_arch_archive[Multi Architecture Archive]
-    gles_shader_archive -- Multi Arch Archiver --> multi_arch_archive
 ```
 
 ## Try Impeller in Flutter
@@ -201,26 +174,76 @@ macOS Desktop. This flag can be specified to `flutter run`.
 If the application needs to be launched with Impeller enabled without using the
 Flutter tool, follow the platform specific steps below.
 
-### iOS and macOS Desktop
+### iOS
 
-To your `Info.plist` file, add under the top-level `<dict>` tag:
-```
+Flutter enables Impeller by **default** on iOS.
+
+> [!CAUTION]
+> The ability to disable Impeller is going to go away in a future release. Please [file
+> an issue](https://github.com/flutter/flutter/issues/new/choose) if you need to do this
+> in your application. A warning will be displayed on application launch if you opt-out.
+
+To **disable** Impeller on iOS, update your `Info.plist` file to add the following
+under the top-level `<dict>` tag:
+
+```xml
   <key>FLTEnableImpeller</key>
-  <true/>
+  <false/>
 ```
 
 ### Android
 
+Impeller is in preview on Android.
+
 To your `AndroidManifest.xml` file, add under the `<application>` tag:
-```
+
+```xml
   <meta-data
     android:name="io.flutter.embedding.android.EnableImpeller"
     android:value="true" />
 ```
 
+Impeller will use Vulkan on Android by default when opted into. Where Vulkan
+is unavailable, Impeller will fallback to Skia. However, Impellers OpenGL backend
+is well under construction. To try that with your application, add the following
+under the `<application>` tag:
+
+> [!Warning]
+> Selecting the Impeller backend this way will only work in `debug` and `profile`
+> runtime modes.
+
+```xml
+  <meta-data
+    android:name="io.flutter.embedding.android.ImpellerBackend"
+    android:value="opengles" />
+```
+
+### macOS Desktop
+
+Impeller is in preview on macOS Desktop.
+
+To your `Info.plist` file, add under the top-level `<dict>` tag:
+
+```xml
+  <key>FLTEnableImpeller</key>
+  <true/>
+```
+
+## Embedding Standalone Impeller
+
+Impeller is designed to work best when used by Flutter. Most of the teams
+efforts go into being great at that use-case. But, standalone Impeller can be
+used to perform accelerated rendering in most environments without any Flutter
+dependencies.
+
+Impeller provides a standalone SDK. The SDK exposes a single-header C API with
+no platform dependencies. [Prebuilts for major platforms, documentation,
+examples, are available](toolkit/interop/README.md).
+
 ## Documentation, References, and Additional Reading
 
 * [Frequently Asked Questions](docs/faq.md)
+* [Baby's First Triangle](docs/babys_first_triangle.md)
 * [Impellers Coordinate System](docs/coordinate_system.md)
 * [How to Setup Xcode for GPU Frame Captures with Metal.](docs/xcode_frame_capture.md)
 * [How to Setup RenderDoc Frame Captures with Vulkan.](docs/renderdoc_frame_capture.md)
@@ -232,4 +255,9 @@ To your `AndroidManifest.xml` file, add under the `<application>` tag:
 * [Enabling Vulkan Validation Layers on Android](docs/android_validation_layers.md)
 * [Important Benchmarks](docs/benchmarks.md)
 * [Threading in the Vulkan Backend](docs/vulkan_threading.md)
+* [iOS CPU Profiling](docs/ios_cpu_profile.md)
+* [OpenGL ES Development Setup on macOS](docs/opengles_development_setup.md)
+* [Android CPU Profiling](docs/android_cpu_profile.md)
 * [Android Rendering Backend Selection](docs/android.md)
+* [Using Impeller as a Standalone Rendering Library (with OpenGL ES)](docs/standalone_gles.md)
+* [Glossary](docs/glossary.md)

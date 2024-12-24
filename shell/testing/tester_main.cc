@@ -24,8 +24,8 @@
 #include "flutter/shell/common/switches.h"
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
+#include "flutter/third_party/abseil-cpp/absl/base/no_destructor.h"
 
-#include "third_party/abseil-cpp/absl/base/no_destructor.h"
 #include "third_party/dart/runtime/include/bin/dart_io_api.h"
 #include "third_party/dart/runtime/include/dart_api.h"
 #include "third_party/skia/include/core/SkSurface.h"
@@ -35,7 +35,6 @@
 
 #if ALLOW_IMPELLER
 #include <vulkan/vulkan.h>                                        // nogncheck
-#include "flutter/vulkan/procs/vulkan_proc_table.h"               // nogncheck
 #include "impeller/entity/vk/entity_shaders_vk.h"                 // nogncheck
 #include "impeller/entity/vk/framebuffer_blend_shaders_vk.h"      // nogncheck
 #include "impeller/entity/vk/modern_shaders_vk.h"                 // nogncheck
@@ -44,9 +43,6 @@
 #include "impeller/renderer/context.h"                            // nogncheck
 #include "impeller/renderer/vk/compute_shaders_vk.h"              // nogncheck
 #include "shell/gpu/gpu_surface_vulkan_impeller.h"                // nogncheck
-#if IMPELLER_ENABLE_3D
-#include "impeller/scene/shaders/vk/scene_shaders_vk.h"  // nogncheck
-#endif                                                   // IMPELLER_ENABLE_3D
 
 static std::vector<std::shared_ptr<fml::Mapping>> ShaderLibraryMappings() {
   return {
@@ -57,10 +53,6 @@ static std::vector<std::shared_ptr<fml::Mapping>> ShaderLibraryMappings() {
       std::make_shared<fml::NonOwnedMapping>(
           impeller_framebuffer_blend_shaders_vk_data,
           impeller_framebuffer_blend_shaders_vk_length),
-#if IMPELLER_ENABLE_3D
-      std::make_shared<fml::NonOwnedMapping>(impeller_scene_shaders_vk_data,
-                                             impeller_scene_shaders_vk_length),
-#endif  // IMPELLER_ENABLE_3D
       std::make_shared<fml::NonOwnedMapping>(
           impeller_compute_shaders_vk_data, impeller_compute_shaders_vk_length),
   };
@@ -69,7 +61,6 @@ static std::vector<std::shared_ptr<fml::Mapping>> ShaderLibraryMappings() {
 struct ImpellerVulkanContextHolder {
   ImpellerVulkanContextHolder() = default;
   ImpellerVulkanContextHolder(ImpellerVulkanContextHolder&&) = default;
-  fml::RefPtr<vulkan::VulkanProcTable> vulkan_proc_table;
   std::shared_ptr<impeller::ContextVK> context;
   std::shared_ptr<impeller::SurfaceContextVK> surface_context;
 
@@ -77,15 +68,8 @@ struct ImpellerVulkanContextHolder {
 };
 
 bool ImpellerVulkanContextHolder::Initialize(bool enable_validation) {
-  vulkan_proc_table =
-      fml::MakeRefCounted<vulkan::VulkanProcTable>(&vkGetInstanceProcAddr);
-  if (!vulkan_proc_table->NativeGetInstanceProcAddr()) {
-    FML_LOG(ERROR) << "Could not load Swiftshader library.";
-    return false;
-  }
   impeller::ContextVK::Settings context_settings;
-  context_settings.proc_address_callback =
-      vulkan_proc_table->NativeGetInstanceProcAddr();
+  context_settings.proc_address_callback = &vkGetInstanceProcAddr;
   context_settings.shader_libraries_data = ShaderLibraryMappings();
   context_settings.cache_directory = fml::paths::GetCachesDirectory();
   context_settings.enable_validation = enable_validation;
@@ -111,7 +95,8 @@ bool ImpellerVulkanContextHolder::Initialize(bool enable_validation) {
 
   impeller::vk::UniqueSurfaceKHR surface{vk_surface, context->GetInstance()};
   surface_context = context->CreateSurfaceContext();
-  if (!surface_context->SetWindowSurface(std::move(surface))) {
+  if (!surface_context->SetWindowSurface(std::move(surface),
+                                         impeller::ISize{1, 1})) {
     VALIDATION_LOG << "Could not set up surface for context.";
     return false;
   }
@@ -167,8 +152,7 @@ class TesterExternalViewEmbedder : public ExternalViewEmbedder {
                       raster_thread_merger) override {}
 
   // |ExternalViewEmbedder|
-  void PrepareFlutterView(int64_t flutter_view_id,
-                          SkISize frame_size,
+  void PrepareFlutterView(SkISize frame_size,
                           double device_pixel_ratio) override {}
 
   // |ExternalViewEmbedder|
@@ -227,7 +211,7 @@ class TesterPlatformView : public PlatformView,
     if (delegate_.OnPlatformViewGetSettings().enable_impeller) {
       FML_DCHECK(impeller_context_holder_.context);
       auto surface = std::make_unique<GPUSurfaceVulkanImpeller>(
-          impeller_context_holder_.surface_context);
+          nullptr, impeller_context_holder_.surface_context);
       FML_DCHECK(surface->IsValid());
       return surface;
     }
@@ -283,9 +267,11 @@ class ScriptCompletionTaskObserver {
  public:
   ScriptCompletionTaskObserver(Shell& shell,
                                fml::RefPtr<fml::TaskRunner> main_task_runner,
+                               fml::RefPtr<fml::TaskRunner> ui_task_runner,
                                bool run_forever)
       : shell_(shell),
         main_task_runner_(std::move(main_task_runner)),
+        ui_task_runner_(std::move(ui_task_runner)),
         run_forever_(run_forever) {}
 
   int GetExitCodeForLastError() const {
@@ -297,6 +283,12 @@ class ScriptCompletionTaskObserver {
     if (shell_.EngineHasLivePorts()) {
       // The UI isolate still has live ports and is running. Nothing to do
       // just yet.
+      return;
+    }
+    if (shell_.EngineHasPendingMicrotasks()) {
+      // Post an empty task to force a run of the engine task observer that
+      // drains the microtask queue.
+      ui_task_runner_->PostTask([] {});
       return;
     }
 
@@ -318,6 +310,7 @@ class ScriptCompletionTaskObserver {
  private:
   Shell& shell_;
   fml::RefPtr<fml::TaskRunner> main_task_runner_;
+  fml::RefPtr<fml::TaskRunner> ui_task_runner_;
   bool run_forever_ = false;
   std::optional<DartErrorCode> last_error_;
   bool has_terminated_ = false;
@@ -472,6 +465,7 @@ int RunTester(const flutter::Settings& settings,
       *shell,  // a valid shell
       fml::MessageLoop::GetCurrent()
           .GetTaskRunner(),  // the message loop to terminate
+      ui_task_runner,        // runner for Dart microtasks
       run_forever            // should the exit be ignored
   );
 
@@ -609,6 +603,19 @@ EXPORTED void Spawn(const char* entrypoint, const char* route) {
 
   Dart_EnterIsolate(isolate);
 }
+
+EXPORTED void ForceShutdownIsolate() {
+  // Enable Isolate.exit().
+  FML_DCHECK(Dart_CurrentIsolate() != nullptr);
+  Dart_Handle isolate_lib = Dart_LookupLibrary(tonic::ToDart("dart:isolate"));
+  FML_CHECK(!tonic::CheckAndHandleError(isolate_lib));
+  Dart_Handle isolate_type = Dart_GetNonNullableType(
+      isolate_lib, tonic::ToDart("Isolate"), 0, nullptr);
+  FML_CHECK(!tonic::CheckAndHandleError(isolate_type));
+  Dart_Handle result =
+      Dart_SetField(isolate_type, tonic::ToDart("_mayExit"), Dart_True());
+  FML_CHECK(!tonic::CheckAndHandleError(result));
+}
 }
 
 }  // namespace flutter
@@ -637,6 +644,7 @@ int main(int argc, char* argv[]) {
   }
 
   settings.leak_vm = false;
+  settings.enable_platform_isolates = true;
 
   if (settings.icu_data_path.empty()) {
     settings.icu_data_path = "icudtl.dat";

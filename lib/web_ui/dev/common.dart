@@ -45,10 +45,10 @@ abstract class PlatformBinding {
   String get chromePlatformString;
 
   String getChromeDownloadUrl(String version) =>
-      'https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$version/$chromePlatformString/chrome-$chromePlatformString.zip';
+      'https://storage.googleapis.com/chrome-for-testing-public/$version/$chromePlatformString/chrome-$chromePlatformString.zip';
 
   String getChromeDriverDownloadUrl(String version) =>
-      'https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/$version/$chromePlatformString/chromedriver-$chromePlatformString.zip';
+      'https://storage.googleapis.com/chrome-for-testing-public/$version/$chromePlatformString/chromedriver-$chromePlatformString.zip';
 
   String getFirefoxDownloadUrl(String version);
   String getFirefoxDownloadFilename(String version);
@@ -213,15 +213,12 @@ class DevNull implements StringSink {
   void writeln([Object? obj = '']) {}
 }
 
-/// Whether the felt command is running on Cirrus CI.
-bool get isCirrus => io.Platform.environment['CIRRUS_CI'] == 'true';
-
 /// Whether the felt command is running on LUCI.
 bool get isLuci => io.Platform.environment['LUCI_CONTEXT'] != null;
 
 /// Whether the felt command is running on one of the Continuous Integration
 /// environements.
-bool get isCi => isCirrus || isLuci;
+bool get isCi => isLuci;
 
 const String kChrome = 'chrome';
 const String kEdge = 'edge';

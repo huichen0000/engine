@@ -51,16 +51,17 @@ bool EmbedderTestCompositor::CollectBackingStore(
   return true;
 }
 
-void EmbedderTestCompositor::SetBackingStoreProducer(
-    std::unique_ptr<EmbedderTestBackingStoreProducer> backingstore_producer) {
-  backingstore_producer_ = std::move(backingstore_producer);
+sk_sp<SkSurface> EmbedderTestCompositor::GetSurface(
+    const FlutterBackingStore* backing_store) const {
+  return backingstore_producer_->GetSurface(backing_store);
 }
 
 sk_sp<SkImage> EmbedderTestCompositor::GetLastComposition() {
   return last_composition_;
 }
 
-bool EmbedderTestCompositor::Present(const FlutterLayer** layers,
+bool EmbedderTestCompositor::Present(FlutterViewId view_id,
+                                     const FlutterLayer** layers,
                                      size_t layers_count) {
   if (!UpdateOffscrenComposition(layers, layers_count)) {
     FML_LOG(ERROR)
@@ -75,7 +76,7 @@ bool EmbedderTestCompositor::Present(const FlutterLayer** layers,
     if (present_callback_is_one_shot_) {
       present_callback_ = nullptr;
     }
-    callback(layers, layers_count);
+    callback(view_id, layers, layers_count);
   }
 
   InvokeAllCallbacks(on_present_callbacks_);

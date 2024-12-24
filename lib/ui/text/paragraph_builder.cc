@@ -30,6 +30,8 @@
 namespace flutter {
 namespace {
 
+const double kTextHeightNone = 0.0;
+
 // TextStyle
 
 const int kTSLeadingDistributionIndex = 0;
@@ -151,12 +153,11 @@ void ParagraphBuilder::Create(Dart_Handle wrapper,
                               double fontSize,
                               double height,
                               const std::u16string& ellipsis,
-                              const std::string& locale,
-                              bool applyRoundingHack) {
+                              const std::string& locale) {
   UIDartState::ThrowIfUIOperationsProhibited();
   auto res = fml::MakeRefCounted<ParagraphBuilder>(
       encoded_handle, strutData, fontFamily, strutFontFamilies, fontSize,
-      height, ellipsis, locale, applyRoundingHack);
+      height, ellipsis, locale);
   res->AssociateWithDartWrapper(wrapper);
 }
 
@@ -231,8 +232,7 @@ ParagraphBuilder::ParagraphBuilder(
     double fontSize,
     double height,
     const std::u16string& ellipsis,
-    const std::string& locale,
-    bool applyRoundingHack) {
+    const std::string& locale) {
   int32_t mask = 0;
   txt::ParagraphStyle style;
   {
@@ -293,7 +293,6 @@ ParagraphBuilder::ParagraphBuilder(
   if (mask & kPSLocaleMask) {
     style.locale = locale;
   }
-  style.apply_rounding_hack = applyRoundingHack;
 
   FontCollection& font_collection = UIDartState::Current()
                                         ->platform_configuration()
@@ -448,7 +447,7 @@ void ParagraphBuilder::pushStyle(const tonic::Int32List& encoded,
 
   if (mask & kTSHeightMask) {
     style.height = height;
-    style.has_height_override = true;
+    style.has_height_override = style.height != kTextHeightNone;
   }
 
   if (mask & kTSLocaleMask) {
@@ -459,7 +458,7 @@ void ParagraphBuilder::pushStyle(const tonic::Int32List& encoded,
     Paint background(background_objects, background_data);
     if (background.isNotNull()) {
       DlPaint dl_paint;
-      background.toDlPaint(dl_paint);
+      background.toDlPaint(dl_paint, DlTileMode::kDecal);
       style.background = dl_paint;
     }
   }
@@ -468,7 +467,7 @@ void ParagraphBuilder::pushStyle(const tonic::Int32List& encoded,
     Paint foreground(foreground_objects, foreground_data);
     if (foreground.isNotNull()) {
       DlPaint dl_paint;
-      foreground.toDlPaint(dl_paint);
+      foreground.toDlPaint(dl_paint, DlTileMode::kDecal);
       style.foreground = dl_paint;
     }
   }

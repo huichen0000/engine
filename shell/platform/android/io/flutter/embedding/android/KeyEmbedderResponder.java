@@ -8,6 +8,7 @@ import android.view.InputDevice;
 import android.view.KeyEvent;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import io.flutter.Log;
 import io.flutter.embedding.android.KeyboardMap.PressingGoal;
 import io.flutter.embedding.android.KeyboardMap.TogglingGoal;
 import io.flutter.plugin.common.BinaryMessenger;
@@ -368,7 +369,6 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
     output.physicalKey = physicalKey;
     output.character = character;
     output.synthesized = false;
-    output.deviceType = KeyData.DeviceType.kKeyboard;
 
     sendKeyEvent(output, onKeyEventHandledCallback);
     for (final Runnable postSyncEvent : postSynchronizeEvents) {
@@ -398,9 +398,13 @@ public class KeyEmbedderResponder implements KeyboardManager.Responder {
             ? null
             : message -> {
               Boolean handled = false;
-              message.rewind();
-              if (message.capacity() != 0) {
-                handled = message.get() != 0;
+              if (message != null) {
+                message.rewind();
+                if (message.capacity() != 0) {
+                  handled = message.get() != 0;
+                }
+              } else {
+                Log.w(TAG, "A null reply was received when sending a key event to the framework.");
               }
               onKeyEventHandledCallback.onKeyEventHandled(handled);
             };

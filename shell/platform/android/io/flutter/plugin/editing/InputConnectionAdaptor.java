@@ -4,6 +4,8 @@
 
 package io.flutter.plugin.editing;
 
+import static io.flutter.Build.API_LEVELS;
+
 import android.annotation.TargetApi;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -31,6 +33,7 @@ import androidx.annotation.RequiresApi;
 import androidx.core.view.inputmethod.InputConnectionCompat;
 import io.flutter.Log;
 import io.flutter.embedding.engine.FlutterJNI;
+import io.flutter.embedding.engine.systemchannels.ScribeChannel;
 import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import java.io.ByteArrayOutputStream;
 import java.io.FileNotFoundException;
@@ -49,6 +52,7 @@ public class InputConnectionAdaptor extends BaseInputConnection
 
   private final View mFlutterView;
   private final int mClient;
+  private final ScribeChannel scribeChannel;
   private final TextInputChannel textInputChannel;
   private final ListenableEditingState mEditable;
   private final EditorInfo mEditorInfo;
@@ -67,6 +71,7 @@ public class InputConnectionAdaptor extends BaseInputConnection
       View view,
       int client,
       TextInputChannel textInputChannel,
+      ScribeChannel scribeChannel,
       KeyboardDelegate keyboardDelegate,
       ListenableEditingState editable,
       EditorInfo editorInfo,
@@ -75,6 +80,7 @@ public class InputConnectionAdaptor extends BaseInputConnection
     mFlutterView = view;
     mClient = client;
     this.textInputChannel = textInputChannel;
+    this.scribeChannel = scribeChannel;
     mEditable = editable;
     mEditable.addEditingStateListener(this);
     mEditorInfo = editorInfo;
@@ -98,10 +104,19 @@ public class InputConnectionAdaptor extends BaseInputConnection
       View view,
       int client,
       TextInputChannel textInputChannel,
+      ScribeChannel scribeChannel,
       KeyboardDelegate keyboardDelegate,
       ListenableEditingState editable,
       EditorInfo editorInfo) {
-    this(view, client, textInputChannel, keyboardDelegate, editable, editorInfo, new FlutterJNI());
+    this(
+        view,
+        client,
+        textInputChannel,
+        scribeChannel,
+        keyboardDelegate,
+        editable,
+        editorInfo,
+        new FlutterJNI());
   }
 
   private ExtractedText getExtractedText(ExtractedTextRequest request) {
@@ -118,9 +133,6 @@ public class InputConnectionAdaptor extends BaseInputConnection
   }
 
   private CursorAnchorInfo getCursorAnchorInfo() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-      return null;
-    }
     if (mCursorAnchorInfoBuilder == null) {
       mCursorAnchorInfoBuilder = new CursorAnchorInfo.Builder();
     } else {
@@ -226,9 +238,6 @@ public class InputConnectionAdaptor extends BaseInputConnection
 
   @Override
   public boolean requestCursorUpdates(int cursorUpdateMode) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-      return false;
-    }
     if ((cursorUpdateMode & CURSOR_UPDATE_IMMEDIATE) != 0) {
       mImm.updateCursorAnchorInfo(mFlutterView, getCursorAnchorInfo());
     }
@@ -265,6 +274,10 @@ public class InputConnectionAdaptor extends BaseInputConnection
     endBatchEdit();
     return result;
   }
+
+  // TODO(justinmc): Scribe stylus gestures should be supported here via
+  // performHandwritingGesture.
+  // https://github.com/flutter/flutter/issues/156018
 
   // Sanitizes the index to ensure the index is within the range of the
   // contents of editable.
@@ -482,11 +495,11 @@ public class InputConnectionAdaptor extends BaseInputConnection
   }
 
   @Override
-  @TargetApi(25)
-  @RequiresApi(25)
+  @TargetApi(API_LEVELS.API_25)
+  @RequiresApi(API_LEVELS.API_25)
   public boolean commitContent(InputContentInfo inputContentInfo, int flags, Bundle opts) {
     // Ensure permission is granted.
-    if (Build.VERSION.SDK_INT >= 25
+    if (Build.VERSION.SDK_INT >= API_LEVELS.API_25
         && (flags & InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION) != 0) {
       try {
         inputContentInfo.requestPermission();
@@ -569,9 +582,6 @@ public class InputConnectionAdaptor extends BaseInputConnection
         mEditable.getComposingStart(),
         mEditable.getComposingEnd());
 
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-      return;
-    }
     if (mExtractRequest != null) {
       mImm.updateExtractedText(
           mFlutterView, mExtractRequest.token, getExtractedText(mExtractRequest));

@@ -13,7 +13,8 @@
 #include "impeller/entity/entity.h"
 #include "impeller/entity/texture_fill.frag.h"
 #include "impeller/entity/texture_fill.vert.h"
-#include "impeller/entity/texture_fill_external.frag.h"
+#include "impeller/entity/texture_fill_strict_src.frag.h"
+#include "impeller/entity/tiled_texture_fill_external.frag.h"
 #include "impeller/geometry/constants.h"
 #include "impeller/renderer/render_pass.h"
 #include "impeller/renderer/vertex_buffer_builder.h"
@@ -30,8 +31,8 @@ std::shared_ptr<TextureContents> TextureContents::MakeRect(Rect destination) {
   return contents;
 }
 
-void TextureContents::SetLabel(std::string label) {
-  label_ = std::move(label);
+void TextureContents::SetLabel(std::string_view label) {
+  label_ = label;
 }
 
 void TextureContents::SetDestinationRect(Rect rect) {
@@ -52,10 +53,6 @@ void TextureContents::SetOpacity(Scalar opacity) {
 
 void TextureContents::SetStencilEnabled(bool enabled) {
   stencil_enabled_ = enabled;
-}
-
-bool TextureContents::CanInheritOpacity(const Entity& entity) const {
-  return true;
 }
 
 void TextureContents::SetInheritedOpacity(Scalar opacity) {
@@ -79,7 +76,8 @@ std::optional<Snapshot> TextureContents::RenderToSnapshot(
     std::optional<Rect> coverage_limit,
     const std::optional<SamplerDescriptor>& sampler_descriptor,
     bool msaa_enabled,
-    const std::string& label) const {
+    int32_t mip_count,
+    std::string_view label) const {
   // Passthrough textures that have simple rectangle paths and complete source
   // rects.
   auto bounds = destination_rect_;
@@ -101,91 +99,129 @@ std::optional<Snapshot> TextureContents::RenderToSnapshot(
       std::nullopt,                                      // coverage_limit
       sampler_descriptor.value_or(sampler_descriptor_),  // sampler_descriptor
       true,                                              // msaa_enabled
-      label);                                            // label
+      /*mip_count=*/mip_count,
+      label);  // label
 }
 
 bool TextureContents::Render(const ContentContext& renderer,
                              const Entity& entity,
                              RenderPass& pass) const {
-  auto capture = entity.GetCapture().CreateChild("TextureContents");
-
   using VS = TextureFillVertexShader;
   using FS = TextureFillFragmentShader;
-  using FSExternal = TextureFillExternalFragmentShader;
+  using FSStrict = TextureFillStrictSrcFragmentShader;
 
   if (destination_rect_.IsEmpty() || source_rect_.IsEmpty() ||
       texture_ == nullptr || texture_->GetSize().IsEmpty()) {
     return true;  // Nothing to render.
   }
 
+#ifdef IMPELLER_ENABLE_OPENGLES
+  using FSExternal = TiledTextureFillExternalFragmentShader;
   bool is_external_texture =
       texture_->GetTextureDescriptor().type == TextureType::kTextureExternalOES;
+#endif  // IMPELLER_ENABLE_OPENGLES
 
-  // Expand the source rect by half a texel, which aligns sampled texels to the
-  // pixel grid if the source rect is the same size as the destination rect.
   auto texture_coords =
-      Rect::MakeSize(texture_->GetSize())
-          .Project(capture.AddRect("Source rect", source_rect_).Expand(0.5));
-
-  VertexBufferBuilder<VS::PerVertexData> vertex_builder;
-
-  auto destination_rect =
-      capture.AddRect("Destination rect", destination_rect_);
-  vertex_builder.AddVertices({
-      {destination_rect.GetLeftTop(), texture_coords.GetLeftTop()},
-      {destination_rect.GetRightTop(), texture_coords.GetRightTop()},
-      {destination_rect.GetLeftBottom(), texture_coords.GetLeftBottom()},
-      {destination_rect.GetRightBottom(), texture_coords.GetRightBottom()},
-  });
-
+      Rect::MakeSize(texture_->GetSize()).Project(source_rect_);
   auto& host_buffer = renderer.GetTransientsBuffer();
 
-  VS::FrameInfo frame_info;
-  frame_info.mvp = pass.GetOrthographicTransform() *
-                   capture.AddMatrix("Transform", entity.GetTransform());
-  frame_info.texture_sampler_y_coord_scale = texture_->GetYCoordScale();
-  frame_info.alpha = capture.AddScalar("Alpha", GetOpacity());
+  std::array<VS::PerVertexData, 4> vertices = {
+      VS::PerVertexData{destination_rect_.GetLeftTop(),
+                        texture_coords.GetLeftTop()},
+      VS::PerVertexData{destination_rect_.GetRightTop(),
+                        texture_coords.GetRightTop()},
+      VS::PerVertexData{destination_rect_.GetLeftBottom(),
+                        texture_coords.GetLeftBottom()},
+      VS::PerVertexData{destination_rect_.GetRightBottom(),
+                        texture_coords.GetRightBottom()},
+  };
+  auto vertex_buffer = CreateVertexBuffer(vertices, host_buffer);
 
-  Command cmd;
+  VS::FrameInfo frame_info;
+  frame_info.mvp = entity.GetShaderTransform(pass);
+  frame_info.texture_sampler_y_coord_scale = texture_->GetYCoordScale();
+
+#ifdef IMPELLER_DEBUG
   if (label_.empty()) {
-    DEBUG_COMMAND_INFO(cmd, "Texture Fill");
+    pass.SetCommandLabel("Texture Fill");
   } else {
-    DEBUG_COMMAND_INFO(cmd, "Texture Fill: " + label_);
+    pass.SetCommandLabel("Texture Fill: " + label_);
   }
+#endif  // IMPELLER_DEBUG
 
   auto pipeline_options = OptionsFromPassAndEntity(pass, entity);
   if (!stencil_enabled_) {
-    pipeline_options.stencil_compare = CompareFunction::kAlways;
+    pipeline_options.stencil_mode = ContentContextOptions::StencilMode::kIgnore;
   }
   pipeline_options.primitive_type = PrimitiveType::kTriangleStrip;
 
+  pipeline_options.depth_write_enabled =
+      stencil_enabled_ && pipeline_options.blend_mode == BlendMode::kSource;
+
 #ifdef IMPELLER_ENABLE_OPENGLES
   if (is_external_texture) {
-    cmd.pipeline = renderer.GetTextureExternalPipeline(pipeline_options);
+    pass.SetPipeline(
+        renderer.GetTiledTextureExternalPipeline(pipeline_options));
   } else {
-    cmd.pipeline = renderer.GetTexturePipeline(pipeline_options);
+    pass.SetPipeline(
+        strict_source_rect_enabled_
+            ? renderer.GetTextureStrictSrcPipeline(pipeline_options)
+            : renderer.GetTexturePipeline(pipeline_options));
   }
 #else
-  cmd.pipeline = renderer.GetTexturePipeline(pipeline_options);
+  pass.SetPipeline(strict_source_rect_enabled_
+                       ? renderer.GetTextureStrictSrcPipeline(pipeline_options)
+                       : renderer.GetTexturePipeline(pipeline_options));
 #endif  // IMPELLER_ENABLE_OPENGLES
 
-  cmd.stencil_reference = entity.GetClipDepth();
-  cmd.BindVertices(vertex_builder.CreateVertexBuffer(host_buffer));
-  VS::BindFrameInfo(cmd, host_buffer.EmplaceUniform(frame_info));
-  if (is_external_texture) {
-    FSExternal::BindSAMPLEREXTERNALOESTextureSampler(
-        cmd, texture_,
+  pass.SetVertexBuffer(vertex_buffer);
+  VS::BindFrameInfo(pass, host_buffer.EmplaceUniform(frame_info));
+
+  if (strict_source_rect_enabled_) {
+    // For a strict source rect, shrink the texture coordinate range by half a
+    // texel to ensure that linear filtering does not sample anything outside
+    // the source rect bounds.
+    auto strict_texture_coords =
+        Rect::MakeSize(texture_->GetSize()).Project(source_rect_.Expand(-0.5));
+
+    FSStrict::FragInfo frag_info;
+    frag_info.source_rect = Vector4(strict_texture_coords.GetLTRB());
+    frag_info.alpha = GetOpacity();
+    FSStrict::BindFragInfo(pass, host_buffer.EmplaceUniform((frag_info)));
+    FSStrict::BindTextureSampler(
+        pass, texture_,
         renderer.GetContext()->GetSamplerLibrary()->GetSampler(
             sampler_descriptor_));
+#ifdef IMPELLER_ENABLE_OPENGLES
+  } else if (is_external_texture) {
+    FSExternal::FragInfo frag_info;
+    frag_info.x_tile_mode =
+        static_cast<Scalar>(sampler_descriptor_.width_address_mode);
+    frag_info.y_tile_mode =
+        static_cast<Scalar>(sampler_descriptor_.height_address_mode);
+    frag_info.alpha = GetOpacity();
+    FSExternal::BindFragInfo(pass, host_buffer.EmplaceUniform(frag_info));
+
+    SamplerDescriptor sampler_desc;
+    // OES_EGL_image_external states that only CLAMP_TO_EDGE is valid, so
+    // we emulate all other tile modes here by remapping the texture
+    // coordinates.
+    sampler_desc.width_address_mode = SamplerAddressMode::kClampToEdge;
+    sampler_desc.height_address_mode = SamplerAddressMode::kClampToEdge;
+    FSExternal::BindSAMPLEREXTERNALOESTextureSampler(
+        pass, texture_,
+        renderer.GetContext()->GetSamplerLibrary()->GetSampler(sampler_desc));
+#endif  //  IMPELLER_ENABLE_OPENGLES
   } else {
+    FS::FragInfo frag_info;
+    frag_info.alpha = GetOpacity();
+    FS::BindFragInfo(pass, host_buffer.EmplaceUniform((frag_info)));
     FS::BindTextureSampler(
-        cmd, texture_,
+        pass, texture_,
         renderer.GetContext()->GetSamplerLibrary()->GetSampler(
             sampler_descriptor_));
   }
-  pass.AddCommand(std::move(cmd));
-
-  return true;
+  return pass.Draw().ok();
 }
 
 void TextureContents::SetSourceRect(const Rect& source_rect) {
@@ -196,8 +232,16 @@ const Rect& TextureContents::GetSourceRect() const {
   return source_rect_;
 }
 
-void TextureContents::SetSamplerDescriptor(SamplerDescriptor desc) {
-  sampler_descriptor_ = std::move(desc);
+void TextureContents::SetStrictSourceRect(bool strict) {
+  strict_source_rect_enabled_ = strict;
+}
+
+bool TextureContents::GetStrictSourceRect() const {
+  return strict_source_rect_enabled_;
+}
+
+void TextureContents::SetSamplerDescriptor(const SamplerDescriptor& desc) {
+  sampler_descriptor_ = desc;
 }
 
 const SamplerDescriptor& TextureContents::GetSamplerDescriptor() const {

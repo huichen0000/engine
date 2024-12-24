@@ -8,7 +8,7 @@ import("//flutter/examples/examples.gni")
 import("//flutter/shell/platform/config.gni")
 import("//flutter/shell/platform/glfw/config.gni")
 import("//flutter/testing/testing.gni")
-import("//third_party/dart/build/dart/copy_tree.gni")
+import("$dart_src/build/dart/copy_tree.gni")
 
 # Whether to build the dartdevc sdk, libraries, and source files
 # required for the flutter web sdk.
@@ -104,7 +104,7 @@ group("flutter") {
         # This must be listed explicitly for desktop cross-builds since
         # //flutter/lib/snapshot:generate_snapshot_bin will only build
         # gen_snapshot for the host and not the target.
-        "//third_party/dart/runtime/bin:gen_snapshot",
+        "$dart_src/runtime/bin:gen_snapshot",
 
         # Impeller artifacts - compiler and libtessellator
         "//flutter/impeller/compiler:impellerc",
@@ -117,7 +117,7 @@ group("flutter") {
       if (host_os == "linux") {
         public_deps += [
           # Built alongside gen_snapshot for 64 bit targets
-          "//third_party/dart/runtime/bin:analyze_snapshot",
+          "$dart_src/runtime/bin:analyze_snapshot",
         ]
       }
 
@@ -129,8 +129,11 @@ group("flutter") {
 
   if (build_engine_artifacts) {
     public_deps += [
+      "//flutter/build/dart/test:gen_dartcli_call",
+      "//flutter/build/dart/test:gen_executable_call",
       "//flutter/shell/testing",
       "//flutter/tools/const_finder",
+      "//flutter/tools/engine_tool:tests",
       "//flutter/tools/font_subset",
     ]
   }
@@ -141,8 +144,8 @@ group("flutter") {
       "//flutter/display_list:display_list_benchmarks",
       "//flutter/display_list:display_list_builder_benchmarks",
       "//flutter/display_list:display_list_region_benchmarks",
+      "//flutter/display_list:display_list_transform_benchmarks",
       "//flutter/fml:fml_benchmarks",
-      "//flutter/impeller/aiks:canvas_benchmarks",
       "//flutter/impeller/geometry:geometry_benchmarks",
       "//flutter/lib/ui:ui_benchmarks",
       "//flutter/shell/common:shell_benchmarks",
@@ -150,14 +153,14 @@ group("flutter") {
     ]
   }
 
+  # Build the standalone Impeller library.
+  if (is_mac || is_linux || is_win || is_android) {
+    public_deps += [ "//flutter/impeller/toolkit/interop:sdk" ]
+  }
+
   if ((flutter_runtime_mode == "debug" || flutter_runtime_mode == "profile") &&
       (is_ios || is_android)) {
     public_deps += [ "//flutter/testing/scenario_app" ]
-  }
-
-  if (is_android && flutter_runtime_mode == "profile" &&
-      current_cpu == "arm64") {
-    public_deps += [ "//flutter/testing/android_background_image" ]
   }
 }
 
@@ -166,8 +169,11 @@ group("unittests") {
 
   public_deps = []
   if (is_android) {
-    public_deps +=
-        [ "//flutter/shell/platform/android:flutter_shell_native_unittests" ]
+    public_deps += [
+      "//flutter/impeller/toolkit/android:apk_unittests",
+      "//flutter/impeller/toolkit/android:unittests",
+      "//flutter/shell/platform/android:flutter_shell_native_unittests",
+    ]
   }
 
   if (is_ios) {
@@ -177,10 +183,10 @@ group("unittests") {
   # Compile all unittests targets if enabled.
   if (enable_unittests) {
     public_deps += [
+      "//flutter/assets:assets_unittests",
       "//flutter/display_list:display_list_rendertests",
       "//flutter/display_list:display_list_unittests",
       "//flutter/flow:flow_unittests",
-      "//flutter/fml:fml_arc_unittests",
       "//flutter/fml:fml_unittests",
       "//flutter/lib/ui:ui_unittests",
       "//flutter/runtime:dart_plugin_registrant_unittests",
@@ -211,6 +217,7 @@ group("unittests") {
       public_deps += [
         "//flutter/impeller:impeller_dart_unittests",
         "//flutter/impeller:impeller_unittests",
+        "//flutter/impeller/toolkit/interop:example",
       ]
     }
 
@@ -284,7 +291,10 @@ if (build_engine_artifacts) {
 group("dist") {
   testonly = true
 
-  deps = [ "//flutter/sky/dist" ]
+  deps = [
+    "//flutter/lib/gpu/dist",
+    "//flutter/sky/dist",
+  ]
 }
 
 if (is_fuchsia && enable_unittests) {
@@ -300,8 +310,7 @@ if (is_fuchsia && enable_unittests) {
 # Dart tree, and is less ambiguous than specifying the binary to build since
 # we can specify the toolchain to use, too.
 if (host_os == "win") {
-  _gen_snapshot_target =
-      "//third_party/dart/runtime/bin:gen_snapshot($host_toolchain)"
+  _gen_snapshot_target = "$dart_src/runtime/bin:gen_snapshot($host_toolchain)"
   copy("gen_snapshot") {
     deps = [ _gen_snapshot_target ]
 

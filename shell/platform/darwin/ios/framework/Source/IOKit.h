@@ -25,7 +25,7 @@ extern "C" {
 #define IOKIT
 #include <device/device_types.h>
 
-static const char* kIOServicePlane = "IOService";
+constexpr const char* kIOServicePlane = "IOService";
 
 typedef io_object_t io_registry_entry_t;
 typedef io_object_t io_service_t;
@@ -91,13 +91,13 @@ void IOIteratorReset(io_iterator_t it);
 CFMutableDictionaryRef IOServiceMatching(const char* name) CF_RETURNS_RETAINED;
 CFMutableDictionaryRef IOServiceNameMatching(const char* name)
     CF_RETURNS_RETAINED;
-io_service_t IOServiceGetMatchingService(mach_port_t master,
-                                         CFDictionaryRef matching
-                                             CF_RELEASES_ARGUMENT);
-kern_return_t IOServiceGetMatchingServices(mach_port_t master,
-                                           CFDictionaryRef matching
-                                               CF_RELEASES_ARGUMENT,
-                                           io_iterator_t* it);
+io_service_t IOServiceGetMatchingService(
+    mach_port_t master,
+    CFDictionaryRef matching CF_RELEASES_ARGUMENT);
+kern_return_t IOServiceGetMatchingServices(
+    mach_port_t master,
+    CFDictionaryRef matching CF_RELEASES_ARGUMENT,
+    io_iterator_t* it);
 
 #if __cplusplus
 }

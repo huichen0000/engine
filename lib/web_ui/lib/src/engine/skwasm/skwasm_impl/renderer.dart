@@ -14,7 +14,9 @@ import 'package:ui/ui_web/src/ui_web.dart' as ui_web;
 
 class SkwasmRenderer implements Renderer {
   late SkwasmSurface surface;
-  late EngineSceneView sceneView;
+  final Map<EngineFlutterView, EngineSceneView> _sceneViews = <EngineFlutterView, EngineSceneView>{};
+
+  bool get isMultiThreaded => skwasmIsMultiThreaded();
 
   @override
   final SkwasmFontCollection fontCollection = SkwasmFontCollection();
@@ -58,7 +60,7 @@ class SkwasmRenderer implements Renderer {
   ui.ImageFilter createBlurImageFilter({
     double sigmaX = 0.0,
     double sigmaY = 0.0,
-    ui.TileMode tileMode = ui.TileMode.clamp
+    ui.TileMode? tileMode,
   }) => SkwasmImageFilter.blur(
     sigmaX: sigmaX,
     sigmaY: sigmaY,
@@ -348,7 +350,6 @@ class SkwasmRenderer implements Renderer {
   @override
   FutureOr<void> initialize() {
     surface = SkwasmSurface();
-    sceneView = EngineSceneView(SkwasmPictureRenderer(surface));
   }
 
   @override
@@ -358,12 +359,12 @@ class SkwasmRenderer implements Renderer {
     int? targetHeight,
     bool allowUpscaling = true
   }) async {
-    final String? contentType = detectContentType(list);
+    final ImageType? contentType = detectImageType(list);
     if (contentType == null) {
       throw Exception('Could not determine content type of image from data');
     }
     final SkwasmImageDecoder baseDecoder = SkwasmImageDecoder(
-      contentType: contentType,
+      contentType: contentType.mimeType,
       dataSource: list.toJS,
       debugSource: 'encoded image bytes',
     );
@@ -398,21 +399,25 @@ class SkwasmRenderer implements Renderer {
     return decoder;
   }
 
-  // TODO(harryterkelsen): Add multiview support,
-  // https://github.com/flutter/flutter/issues/137073.
   @override
-  Future<void> renderScene(ui.Scene scene, ui.FlutterView view) =>
-      sceneView.renderScene(scene as EngineScene);
+  Future<void> renderScene(ui.Scene scene, EngineFlutterView view) {
+    final FrameTimingRecorder? recorder = FrameTimingRecorder.frameTimingsEnabled ? FrameTimingRecorder() : null;
+    recorder?.recordBuildFinish();
+
+    final EngineSceneView sceneView = _getSceneViewForView(view);
+    return sceneView.renderScene(scene as EngineScene, recorder);
+  }
+
+  EngineSceneView _getSceneViewForView(EngineFlutterView view) {
+    return _sceneViews.putIfAbsent(view, () {
+      final EngineSceneView sceneView = EngineSceneView(SkwasmPictureRenderer(surface), view);
+      view.dom.setScene(sceneView.sceneElement);
+      return sceneView;
+    });
+  }
 
   @override
   String get rendererTag => 'skwasm';
-
-  @override
-  void reset(FlutterViewEmbedder embedder) {
-    // TODO(harryterkelsen): Do this operation on the appropriate Flutter View.
-    final EngineFlutterView implicitView = EnginePlatformDispatcher.instance.implicitView!;
-    implicitView.dom.setScene(sceneView.sceneElement);
-  }
 
   static final Map<String, Future<ui.FragmentProgram>> _programs = <String, Future<ui.FragmentProgram>>{};
 
@@ -463,6 +468,19 @@ class SkwasmRenderer implements Renderer {
       surface.handle,
     ));
   }
+
+  @override
+  FutureOr<ui.Image> createImageFromTextureSource(JSAny textureSource, { required int width, required int height, required bool transferOwnership }) async {
+    if (!transferOwnership) {
+      textureSource = (await createImageBitmap(textureSource, (x: 0, y: 0, width: width, height: height))).toJSAnyShallow;
+    }
+    return SkwasmImage(imageCreateFromTextureSource(
+      textureSource as JSObject,
+      width,
+      height,
+      surface.handle,
+    ));
+  }
 }
 
 class SkwasmPictureRenderer implements PictureRenderer {
@@ -471,6 +489,16 @@ class SkwasmPictureRenderer implements PictureRenderer {
   SkwasmSurface surface;
 
   @override
-  FutureOr<DomImageBitmap> renderPicture(ScenePicture picture) =>
-    surface.renderPicture(picture as SkwasmPicture);
+  FutureOr<RenderResult> renderPictures(List<ScenePicture> pictures) =>
+    surface.renderPictures(pictures.cast<SkwasmPicture>());
+
+  @override
+  ScenePicture clipPicture(ScenePicture picture, ui.Rect clip) {
+    final ui.PictureRecorder recorder = ui.PictureRecorder();
+    final ui.Canvas canvas = ui.Canvas(recorder, clip);
+    canvas.clipRect(clip);
+    canvas.drawPicture(picture);
+
+    return recorder.endRecording() as ScenePicture;
+  }
 }

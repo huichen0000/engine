@@ -16,78 +16,36 @@
 #include "impeller/core/formats.h"
 #include "impeller/entity/contents/content_context.h"
 #include "impeller/entity/contents/filters/border_mask_blur_filter_contents.h"
-#include "impeller/entity/contents/filters/directional_gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/gaussian_blur_filter_contents.h"
 #include "impeller/entity/contents/filters/inputs/filter_input.h"
 #include "impeller/entity/contents/filters/local_matrix_filter_contents.h"
 #include "impeller/entity/contents/filters/matrix_filter_contents.h"
 #include "impeller/entity/contents/filters/morphology_filter_contents.h"
+#include "impeller/entity/contents/filters/runtime_effect_filter_contents.h"
 #include "impeller/entity/contents/filters/yuv_to_rgb_filter_contents.h"
 #include "impeller/entity/contents/texture_contents.h"
 #include "impeller/entity/entity.h"
 #include "impeller/geometry/path_builder.h"
 #include "impeller/renderer/command_buffer.h"
 #include "impeller/renderer/render_pass.h"
+#include "impeller/runtime_stage/runtime_stage.h"
 
 namespace impeller {
 
-std::shared_ptr<FilterContents> FilterContents::MakeDirectionalGaussianBlur(
-    FilterInput::Ref input,
-    Sigma sigma,
-    Vector2 direction,
-    BlurStyle blur_style,
-    Entity::TileMode tile_mode,
-    bool is_second_pass,
-    Sigma secondary_sigma) {
-  auto blur = std::make_shared<DirectionalGaussianBlurFilterContents>();
-  blur->SetInputs({std::move(input)});
-  blur->SetSigma(sigma);
-  blur->SetDirection(direction);
-  blur->SetBlurStyle(blur_style);
-  blur->SetTileMode(tile_mode);
-  blur->SetIsSecondPass(is_second_pass);
-  blur->SetSecondarySigma(secondary_sigma);
-  return blur;
-}
+const int32_t FilterContents::kBlurFilterRequiredMipCount =
+    GaussianBlurFilterContents::kBlurFilterRequiredMipCount;
 
 std::shared_ptr<FilterContents> FilterContents::MakeGaussianBlur(
     const FilterInput::Ref& input,
     Sigma sigma_x,
     Sigma sigma_y,
-    BlurStyle blur_style,
-    Entity::TileMode tile_mode) {
-  constexpr bool use_new_filter =
-#ifdef IMPELLER_ENABLE_NEW_GAUSSIAN_FILTER
-      true;
-#else
-      false;
-#endif
-
-  // TODO(https://github.com/flutter/flutter/issues/131580): Remove once the new
-  // blur handles all cases.
-  if (use_new_filter) {
-    auto blur = std::make_shared<GaussianBlurFilterContents>(
-        sigma_x.sigma, sigma_y.sigma, tile_mode);
-    blur->SetInputs({input});
-    return blur;
-  }
-  std::shared_ptr<FilterContents> x_blur = MakeDirectionalGaussianBlur(
-      /*input=*/input,
-      /*sigma=*/sigma_x,
-      /*direction=*/Point(1, 0),
-      /*blur_style=*/BlurStyle::kNormal,
-      /*tile_mode=*/tile_mode,
-      /*is_second_pass=*/false,
-      /*secondary_sigma=*/{});
-  std::shared_ptr<FilterContents> y_blur = MakeDirectionalGaussianBlur(
-      /*input=*/FilterInput::Make(x_blur),
-      /*sigma=*/sigma_y,
-      /*direction=*/Point(0, 1),
-      /*blur_style=*/blur_style,
-      /*tile_mode=*/tile_mode,
-      /*is_second_pass=*/true,
-      /*secondary_sigma=*/sigma_x);
-  return y_blur;
+    Entity::TileMode tile_mode,
+    FilterContents::BlurStyle mask_blur_style,
+    const Geometry* mask_geometry) {
+  auto blur = std::make_shared<GaussianBlurFilterContents>(
+      sigma_x.sigma, sigma_y.sigma, tile_mode, mask_blur_style, mask_geometry);
+  blur->SetInputs({input});
+  return blur;
 }
 
 std::shared_ptr<FilterContents> FilterContents::MakeBorderMaskBlur(
@@ -158,6 +116,19 @@ std::shared_ptr<FilterContents> FilterContents::MakeYUVToRGBFilter(
   return filter;
 }
 
+std::shared_ptr<FilterContents> FilterContents::MakeRuntimeEffect(
+    FilterInput::Ref input,
+    std::shared_ptr<RuntimeStage> runtime_stage,
+    std::shared_ptr<std::vector<uint8_t>> uniforms,
+    std::vector<RuntimeEffectContents::TextureInput> texture_inputs) {
+  auto filter = std::make_shared<impeller::RuntimeEffectFilterContents>();
+  filter->SetInputs({std::move(input)});
+  filter->SetRuntimeStage(std::move(runtime_stage));
+  filter->SetUniforms(std::move(uniforms));
+  filter->SetTextureInputs(std::move(texture_inputs));
+  return filter;
+}
+
 FilterContents::FilterContents() = default;
 
 FilterContents::~FilterContents() = default;
@@ -188,6 +159,7 @@ bool FilterContents::Render(const ContentContext& renderer,
   if (!maybe_entity.has_value()) {
     return true;
   }
+  maybe_entity->SetClipDepth(entity.GetClipDepth());
   return maybe_entity->Render(renderer, pass);
 }
 
@@ -207,14 +179,6 @@ std::optional<Rect> FilterContents::GetCoverage(const Entity& entity) const {
   entity_with_local_transform.SetTransform(GetTransform(entity.GetTransform()));
 
   return GetLocalCoverage(entity_with_local_transform);
-}
-
-void FilterContents::PopulateGlyphAtlas(
-    const std::shared_ptr<LazyGlyphAtlas>& lazy_glyph_atlas,
-    Scalar scale) {
-  for (auto& input : inputs_) {
-    input->PopulateGlyphAtlas(lazy_glyph_atlas, scale);
-  }
 }
 
 std::optional<Rect> FilterContents::GetFilterCoverage(
@@ -288,7 +252,8 @@ std::optional<Snapshot> FilterContents::RenderToSnapshot(
     std::optional<Rect> coverage_limit,
     const std::optional<SamplerDescriptor>& sampler_descriptor,
     bool msaa_enabled,
-    const std::string& label) const {
+    int32_t mip_count,
+    std::string_view label) const {
   // Resolve the render instruction (entity) from the filter and render it to a
   // snapshot.
   if (std::optional<Entity> result =
@@ -300,14 +265,12 @@ std::optional<Snapshot> FilterContents::RenderToSnapshot(
         coverage_limit,  // coverage_limit
         std::nullopt,    // sampler_descriptor
         true,            // msaa_enabled
-        label);          // label
+        /*mip_count=*/mip_count,
+        label  // label
+    );
   }
 
   return std::nullopt;
-}
-
-const FilterContents* FilterContents::AsFilter() const {
-  return this;
 }
 
 Matrix FilterContents::GetLocalTransform(const Matrix& parent_transform) const {
@@ -316,33 +279,6 @@ Matrix FilterContents::GetLocalTransform(const Matrix& parent_transform) const {
 
 Matrix FilterContents::GetTransform(const Matrix& parent_transform) const {
   return parent_transform * GetLocalTransform(parent_transform);
-}
-bool FilterContents::IsTranslationOnly() const {
-  for (auto& input : inputs_) {
-    if (!input->IsTranslationOnly()) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool FilterContents::IsLeaf() const {
-  for (auto& input : inputs_) {
-    if (!input->IsLeaf()) {
-      return false;
-    }
-  }
-  return true;
-}
-
-void FilterContents::SetLeafInputs(const FilterInput::Vector& inputs) {
-  if (IsLeaf()) {
-    inputs_ = inputs;
-    return;
-  }
-  for (auto& input : inputs_) {
-    input->SetLeafInputs(inputs);
-  }
 }
 
 void FilterContents::SetRenderingMode(Entity::RenderingMode rendering_mode) {

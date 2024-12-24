@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:js_interop';
 import 'dart:typed_data';
 
+import 'package:meta/meta.dart';
 import 'package:ui/ui.dart' as ui;
 import 'package:ui/ui_web/src/ui_web.dart' as ui_web;
 
@@ -77,8 +78,10 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
     _addFontSizeObserver();
     _addLocaleChangedListener();
     registerHotRestartListener(dispose);
-    _setAppLifecycleState(ui.AppLifecycleState.resumed);
-    viewManager.onViewDisposed.listen((_) {
+    _appLifecycleState.addListener(_setAppLifecycleState);
+    _viewFocusBinding.init();
+    domDocument.body?.prepend(accessibilityPlaceholder);
+    _onViewDisposedListener = viewManager.onViewDisposed.listen((_) {
       // Send a metrics changed event to the framework when a view is disposed.
       // View creation/resize is handled by the `_didResize` handler in the
       // EngineFlutterView itself.
@@ -86,9 +89,17 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
     });
   }
 
+  late StreamSubscription<int> _onViewDisposedListener;
+
   /// The [EnginePlatformDispatcher] singleton.
   static EnginePlatformDispatcher get instance => _instance;
   static final EnginePlatformDispatcher _instance = EnginePlatformDispatcher();
+
+  @visibleForTesting
+  final DomElement accessibilityPlaceholder = EngineSemantics
+    .instance
+    .semanticsHelper
+    .prepareAccessibilityPlaceholder();
 
   PlatformConfiguration configuration = PlatformConfiguration(
     locales: parseBrowserLanguages(),
@@ -111,6 +122,10 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
     _disconnectFontSizeObserver();
     _removeLocaleChangedListener();
     HighContrastSupport.instance.removeListener(_updateHighContrast);
+    _appLifecycleState.removeListener(_setAppLifecycleState);
+    _viewFocusBinding.dispose();
+    accessibilityPlaceholder.remove();
+    _onViewDisposedListener.cancel();
     viewManager.dispose();
   }
 
@@ -139,6 +154,9 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   ];
 
   late final FlutterViewManager viewManager = FlutterViewManager(this);
+
+  late final AppLifecycleState _appLifecycleState =
+      AppLifecycleState.create(viewManager);
 
   /// The current list of windows.
   @override
@@ -211,6 +229,38 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
     if (_onMetricsChanged != null) {
       invoke(_onMetricsChanged, _onMetricsChangedZone);
     }
+  }
+
+  late final ViewFocusBinding _viewFocusBinding =
+    ViewFocusBinding(viewManager, invokeOnViewFocusChange);
+
+  @override
+  ui.ViewFocusChangeCallback? get onViewFocusChange => _onViewFocusChange;
+  ui.ViewFocusChangeCallback? _onViewFocusChange;
+  Zone? _onViewFocusChangeZone;
+  @override
+  set onViewFocusChange(ui.ViewFocusChangeCallback? callback) {
+    _onViewFocusChange = callback;
+    _onViewFocusChangeZone = Zone.current;
+  }
+
+  // Engine code should use this method instead of the callback directly.
+  // Otherwise zones won't work properly.
+  void invokeOnViewFocusChange(ui.ViewFocusEvent viewFocusEvent) {
+    invoke1<ui.ViewFocusEvent>(
+      _onViewFocusChange,
+      _onViewFocusChangeZone,
+      viewFocusEvent,
+    );
+  }
+
+  @override
+  void requestViewFocusChange({
+    required int viewId,
+    required ui.ViewFocusState state,
+    required ui.ViewFocusDirection direction,
+  }) {
+    _viewFocusBinding.changeViewFocus(viewId, state);
   }
 
   /// A set of views which have rendered in the current `onBeginFrame` or
@@ -488,7 +538,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
             if (renderer is CanvasKitRenderer) {
               assert(
                 decoded.arguments is int,
-                'Argument to Skia.setResourceCacheMaxBytes must be an int, but was ${decoded.arguments.runtimeType}',
+                'Argument to Skia.setResourceCacheMaxBytes must be an int, but was ${(decoded.arguments as Object?).runtimeType}',
               );
               final int cacheSizeInBytes = decoded.arguments as int;
               CanvasKitRenderer.instance.resourceCacheMaxBytes =
@@ -641,9 +691,10 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
       case 'flutter/accessibility':
         // In widget tests we want to bypass processing of platform messages.
         const StandardMessageCodec codec = StandardMessageCodec();
-        // TODO(yjbanov): Dispatch the announcement to the correct view?
-        //                https://github.com/flutter/flutter/issues/137445
-        implicitView?.accessibilityAnnouncements.handleMessage(codec, data);
+        final EngineSemantics semantics = EngineSemantics.instance;
+        if (semantics.semanticsEnabled) {
+          semantics.accessibilityAnnouncements.handleMessage(codec, data);
+        }
         replyToPlatformMessage(callback, codec.encodeMessage(true));
         return;
 
@@ -736,6 +787,19 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
     scheduleFrameCallback!();
   }
 
+  @override
+  void scheduleWarmUpFrame({required ui.VoidCallback beginFrame, required ui.VoidCallback drawFrame}) {
+    Timer.run(beginFrame);
+    // We use timers here to ensure that microtasks flush in between.
+    //
+    // TODO(dkwingsmt): This logic was moved from the framework and is different
+    // from how Web renders a regular frame, which doesn't flush microtasks
+    // between the callbacks at all (see `initializeEngineServices`). We might
+    // want to change this. See the to-do in `initializeEngineServices` and
+    // https://github.com/flutter/engine/pull/50570#discussion_r1496671676
+    Timer.run(drawFrame);
+  }
+
   /// Updates the application's rendering on the GPU with the newly provided
   /// [Scene]. This function must be called within the scope of the
   /// [onBeginFrame] or [onDrawFrame] callbacks being invoked. If this function
@@ -760,27 +824,25 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   ///    scheduling of frames.
   ///  * [RendererBinding], the Flutter framework class which manages layout and
   ///    painting.
-  @override
   Future<void> render(ui.Scene scene, [ui.FlutterView? view]) async {
-    assert(view != null || implicitView != null,
-        'Calling render without a FlutterView');
-    if (view == null && implicitView == null) {
+    final EngineFlutterView? target = (view ?? implicitView) as EngineFlutterView?;
+    assert(target != null, 'Calling render without a FlutterView');
+    if (target == null) {
       // If there is no view to render into, then this is a no-op.
       return;
     }
-    final ui.FlutterView viewToRender = view ?? implicitView!;
 
     // Only render in an `onDrawFrame` or `onBeginFrame` scope. This is checked
     // by checking if the `_viewsRenderedInCurrentFrame` is non-null and this
     // view hasn't been rendered already in this scope.
     final bool shouldRender =
-        _viewsRenderedInCurrentFrame?.add(viewToRender) ?? false;
+        _viewsRenderedInCurrentFrame?.add(target) ?? false;
     // TODO(harryterkelsen): HTML renderer needs to violate the render rule in
     // order to perform golden tests in Flutter framework because on the HTML
     // renderer, golden tests render to DOM and then take a browser screenshot,
     // https://github.com/flutter/flutter/issues/137073.
     if (shouldRender || renderer.rendererTag == 'html') {
-      await renderer.renderScene(scene, viewToRender);
+      await renderer.renderScene(scene, target);
     }
   }
 
@@ -931,7 +993,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
     configuration = configuration.copyWith(locales: const <ui.Locale>[]);
   }
 
-  // Called by FlutterViewEmbedder when browser languages change.
+  // Called by `_onLocaleChangedSubscription` when browser languages change.
   void updateLocales() {
     configuration = configuration.copyWith(locales: parseBrowserLanguages());
   }
@@ -1033,10 +1095,10 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   }
 
   void _setAppLifecycleState(ui.AppLifecycleState state) {
-    sendPlatformMessage(
+    invokeOnPlatformMessage(
       'flutter/lifecycle',
-      ByteData.sublistView(utf8.encode(state.toString())),
-      null,
+      const StringCodec().encodeMessage(state.toString()),
+      (_) {},
     );
   }
 
@@ -1236,14 +1298,18 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   /// Engine code should use this method instead of the callback directly.
   /// Otherwise zones won't work properly.
   void invokeOnSemanticsAction(
-      int nodeId, ui.SemanticsAction action, ByteData? args) {
+    int viewId,
+    int nodeId,
+    ui.SemanticsAction action,
+    ByteData? args,
+  ) {
     invoke1<ui.SemanticsActionEvent>(
       _onSemanticsActionEvent,
       _onSemanticsActionEventZone,
       ui.SemanticsActionEvent(
         type: action,
         nodeId: nodeId,
-        viewId: 0, // TODO(goderbauer): Wire up the real view ID.
+        viewId: viewId,
         arguments: args,
       ),
     );

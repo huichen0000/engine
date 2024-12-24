@@ -9,7 +9,6 @@
 #include "impeller/core/vertex_buffer.h"
 #include "impeller/entity/contents/content_context.h"
 #include "impeller/entity/entity.h"
-#include "impeller/entity/texture_fill.vert.h"
 #include "impeller/renderer/render_pass.h"
 #include "impeller/renderer/vertex_buffer_builder.h"
 
@@ -17,11 +16,28 @@ namespace impeller {
 
 class Tessellator;
 
+static constexpr Scalar kMinStrokeSize = 1.0f;
+
 struct GeometryResult {
-  PrimitiveType type;
+  enum class Mode {
+    /// The geometry has no overlapping triangles.
+    kNormal,
+    /// The geometry may have overlapping triangles. The geometry should be
+    /// stenciled with the NonZero fill rule.
+    kNonZero,
+    /// The geometry may have overlapping triangles. The geometry should be
+    /// stenciled with the EvenOdd fill rule.
+    kEvenOdd,
+    /// The geometry may have overlapping triangles, but they should not
+    /// overdraw or cancel each other out. This is a special case for stroke
+    /// geometry.
+    kPreventOverdraw,
+  };
+
+  PrimitiveType type = PrimitiveType::kTriangleStrip;
   VertexBuffer vertex_buffer;
   Matrix transform;
-  bool prevent_overdraw;
+  Mode mode = Mode::kNormal;
 };
 
 static const GeometryResult kEmptyResult = {
@@ -31,81 +47,54 @@ static const GeometryResult kEmptyResult = {
         },
 };
 
-enum GeometryVertexType {
-  kPosition,
-  kColor,
-  kUV,
-};
-
-/// @brief Compute UV geometry for a VBB that contains only position geometry.
-///
-/// texture_origin should be set to 0, 0 for stroke and stroke based geometry,
-/// like the point field.
-VertexBufferBuilder<TextureFillVertexShader::PerVertexData>
-ComputeUVGeometryCPU(
-    VertexBufferBuilder<SolidFillVertexShader::PerVertexData>& input,
-    Point texture_origin,
-    Size texture_coverage,
-    Matrix effect_transform);
-
-GeometryResult ComputeUVGeometryForRect(Rect source_rect,
-                                        Rect texture_coverage,
-                                        Matrix effect_transform,
-                                        const ContentContext& renderer,
-                                        const Entity& entity,
-                                        RenderPass& pass);
-
 class Geometry {
  public:
-  static std::shared_ptr<Geometry> MakeFillPath(
-      Path path,
+  virtual ~Geometry() {}
+
+  static std::unique_ptr<Geometry> MakeFillPath(
+      const Path& path,
       std::optional<Rect> inner_rect = std::nullopt);
 
-  static std::shared_ptr<Geometry> MakeStrokePath(
-      Path path,
+  static std::unique_ptr<Geometry> MakeStrokePath(
+      const Path& path,
       Scalar stroke_width = 0.0,
       Scalar miter_limit = 4.0,
       Cap stroke_cap = Cap::kButt,
       Join stroke_join = Join::kMiter);
 
-  static std::shared_ptr<Geometry> MakeCover();
+  static std::unique_ptr<Geometry> MakeCover();
 
-  static std::shared_ptr<Geometry> MakeRect(const Rect& rect);
+  static std::unique_ptr<Geometry> MakeRect(const Rect& rect);
 
-  static std::shared_ptr<Geometry> MakeOval(const Rect& rect);
+  static std::unique_ptr<Geometry> MakeOval(const Rect& rect);
 
-  static std::shared_ptr<Geometry> MakeLine(const Point& p0,
+  static std::unique_ptr<Geometry> MakeLine(const Point& p0,
                                             const Point& p1,
                                             Scalar width,
                                             Cap cap);
 
-  static std::shared_ptr<Geometry> MakeCircle(const Point& center,
+  static std::unique_ptr<Geometry> MakeCircle(const Point& center,
                                               Scalar radius);
 
-  static std::shared_ptr<Geometry> MakeStrokedCircle(const Point& center,
+  static std::unique_ptr<Geometry> MakeStrokedCircle(const Point& center,
                                                      Scalar radius,
                                                      Scalar stroke_width);
 
-  static std::shared_ptr<Geometry> MakeRoundRect(const Rect& rect,
+  static std::unique_ptr<Geometry> MakeRoundRect(const Rect& rect,
                                                  const Size& radii);
-
-  static std::shared_ptr<Geometry> MakePointField(std::vector<Point> points,
-                                                  Scalar radius,
-                                                  bool round);
 
   virtual GeometryResult GetPositionBuffer(const ContentContext& renderer,
                                            const Entity& entity,
                                            RenderPass& pass) const = 0;
 
-  virtual GeometryResult GetPositionUVBuffer(Rect texture_coverage,
-                                             Matrix effect_transform,
-                                             const ContentContext& renderer,
-                                             const Entity& entity,
-                                             RenderPass& pass) const = 0;
-
-  virtual GeometryVertexType GetVertexType() const = 0;
+  virtual GeometryResult::Mode GetResultMode() const;
 
   virtual std::optional<Rect> GetCoverage(const Matrix& transform) const = 0;
+
+  /// @brief Compute an alpha value to simulate lower coverage of fractional
+  ///        pixel strokes.
+  static Scalar ComputeStrokeAlphaCoverage(const Matrix& entity,
+                                           Scalar stroke_width);
 
   /// @brief    Determines if this geometry, transformed by the given
   ///           `transform`, will completely cover all surface area of the given
@@ -121,17 +110,16 @@ class Geometry {
 
   virtual bool IsAxisAlignedRect() const;
 
+  virtual bool CanApplyMaskFilter() const;
+
+  virtual Scalar ComputeAlphaCoverage(const Matrix& transform) const {
+    return 1.0;
+  }
+
  protected:
   static GeometryResult ComputePositionGeometry(
       const ContentContext& renderer,
       const Tessellator::VertexGenerator& generator,
-      const Entity& entity,
-      RenderPass& pass);
-
-  static GeometryResult ComputePositionUVGeometry(
-      const ContentContext& renderer,
-      const Tessellator::VertexGenerator& generator,
-      const Matrix& uv_transform,
       const Entity& entity,
       RenderPass& pass);
 };

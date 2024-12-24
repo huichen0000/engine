@@ -8,7 +8,6 @@
 #include <set>
 #include <string>
 
-#include "flutter/fml/macros.h"
 #include "impeller/base/version.h"
 
 namespace impeller {
@@ -27,10 +26,14 @@ class DescriptionGLES {
 
   std::string GetString() const;
 
+  Version GetGlVersion() const;
+
   bool HasExtension(const std::string& ext) const;
 
   /// @brief      Returns whether GLES includes the debug extension.
   bool HasDebugExtension() const;
+
+  bool IsANGLE() const;
 
  private:
   Version gl_version_;
@@ -41,6 +44,7 @@ class DescriptionGLES {
   std::string gl_version_string_;
   std::string sl_version_string_;
   std::set<std::string> extensions_;
+  bool is_angle_ = false;
   bool is_valid_ = false;
 
   DescriptionGLES(const DescriptionGLES&) = delete;

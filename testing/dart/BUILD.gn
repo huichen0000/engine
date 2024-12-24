@@ -40,11 +40,14 @@ tests = [
   "picture_test.dart",
   "platform_dispatcher_test.dart",
   "platform_view_test.dart",
+  "platform_isolate_test.dart",
+  "platform_isolate_shutdown_test.dart",
   "plugin_utilities_test.dart",
   "semantics_test.dart",
   "serial_gc_test.dart",
   "spawn_helper.dart",
   "spawn_test.dart",
+  "stringification_test.dart",
   "task_order_test.dart",
   "text_test.dart",
   "window_test.dart",
@@ -52,7 +55,7 @@ tests = [
 
 foreach(test, tests) {
   flutter_build_dir = rebase_path("$root_gen_dir")
-  flutter_src_dir = rebase_path("$root_out_dir/../../flutter")
+  flutter_src_dir = rebase_path("//flutter")
   skia_gold_work_dir = rebase_path("$root_gen_dir/skia_gold_$test")
   flutter_frontend_server("compile_$test") {
     main_dart = test
@@ -62,7 +65,6 @@ foreach(test, tests) {
       "-DkFlutterBuildDirectory=$flutter_build_dir",
       "-DkSkiaGoldWorkDirectory=$skia_gold_work_dir",
     ]
-    package_config = ".dart_tool/package_config.json"
     deps = [ "//flutter/third_party/txt:txt_fixtures" ]
     testonly = true
   }

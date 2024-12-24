@@ -22,16 +22,14 @@ import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:skia_gold_client/skia_gold_client.dart';
 import 'package:stream_channel/stream_channel.dart';
 
-import 'package:test_api/src/backend/runtime.dart';
-import 'package:test_api/src/backend/suite_platform.dart';
-import 'package:test_core/src/runner/configuration.dart';
-import 'package:test_core/src/runner/environment.dart';
-import 'package:test_core/src/runner/platform.dart';
-import 'package:test_core/src/runner/plugin/platform_helpers.dart';
-import 'package:test_core/src/runner/runner_suite.dart';
-import 'package:test_core/src/runner/suite.dart';
-import 'package:test_core/src/util/io.dart';
-import 'package:test_core/src/util/stack_trace_mapper.dart';
+import 'package:test_core/backend.dart' hide Compiler;
+// TODO(ditman): Fix ignores when https://github.com/flutter/flutter/issues/143599 is resolved.
+import 'package:test_core/src/runner/environment.dart'; // ignore: implementation_imports
+import 'package:test_core/src/runner/platform.dart'; // ignore: implementation_imports
+import 'package:test_core/src/runner/plugin/platform_helpers.dart'; // ignore: implementation_imports
+import 'package:test_core/src/runner/runner_suite.dart'; // ignore: implementation_imports
+import 'package:test_core/src/util/io.dart'; // ignore: implementation_imports
+import 'package:test_core/src/util/stack_trace_mapper.dart'; // ignore: implementation_imports
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_test_utils/image_compare.dart';
@@ -91,7 +89,7 @@ class BrowserPlatform extends PlatformPlugin {
         .add(_createSourceHandler())
 
         // Serves files from the root of web_ui. Some tests download assets that are embedded
-        // directly in the test folder, such as test/engine/image/sample_image1.png etc
+        // directly in the test folder, such as test/html/image/sample_image1.png etc
         .add(createStaticHandler(env.environment.webUiRootDir.path))
 
         // Serves absolute package URLs (i.e. not /packages/* but /Users/user/*/hosted/pub.dartlang.org/*).
@@ -154,10 +152,6 @@ class BrowserPlatform extends PlatformPlugin {
 
   /// The URL for this server.
   Uri get url => server.url.resolve('/');
-
-  bool get needsCrossOriginIsolated => suite.testBundle.compileConfigs.any(
-    (CompileConfiguration config) => config.renderer == Renderer.skwasm
-  );
 
   /// A [OneOffHandler] for servicing WebSocket connections for
   /// [BrowserManager]s.
@@ -487,7 +481,7 @@ class BrowserPlatform extends PlatformPlugin {
         request.url.path,
       ));
 
-      if (!fileInDirectory.existsSync()) {
+      if (request.url.path.contains('//') || !fileInDirectory.existsSync()) {
         return shelf.Response.notFound('File not found: ${request.url.path}');
       }
 
@@ -509,7 +503,7 @@ class BrowserPlatform extends PlatformPlugin {
         fileInDirectory.readAsBytesSync(),
         headers: <String, Object>{
           HttpHeaders.contentTypeHeader: contentType,
-          if (isScript && needsCrossOriginIsolated)
+          if (isScript && suite.runConfig.crossOriginIsolated)
             ...coopCoepHeaders,
         },
       );
@@ -556,19 +550,27 @@ class BrowserPlatform extends PlatformPlugin {
         (CompileConfiguration config) => _makeBuildConfigString(scriptBase, config)
       ).join(',\n');
       final String bootstrapScript = '''
-<script src="/flutter_js/flutter.js"></script>
+<script>
+  // Define this before loading flutter.js to test PR flutter/engine#51294
+  if (!window._flutter) {
+    window._flutter = {};
+  }
+</script>
 <script>
   _flutter.buildConfig = {
+    useLocalCanvaskit: true,
     builds: [
       $buildConfigsString
     ]
   };
+</script>
+<script src="/flutter_js/flutter.js"></script>
+<script>
   _flutter.loader.load({
     config: {
-      canvasKitBaseUrl: "/canvaskit/",
-      // Some of our tests rely on color emoji
-      useColorEmoji: true,
       canvasKitVariant: "${getCanvasKitVariant()}",
+      canvasKitBaseUrl: "/canvaskit",
+      forceSingleThreadedSkwasm: ${suite.runConfig.forceSingleThreadedSkwasm},
     },
   });
 </script>
@@ -584,7 +586,7 @@ class BrowserPlatform extends PlatformPlugin {
         </html>
       ''', headers: <String, String>{
         'Content-Type': 'text/html',
-        if (needsCrossOriginIsolated)
+        if (suite.runConfig.crossOriginIsolated)
           ...coopCoepHeaders
       });
     }
@@ -1052,7 +1054,18 @@ class BrowserManager {
         }
 
         _controllers.add(controller!);
-        return await controller!.suite;
+
+        final List<Future<RunnerSuite>> futures = <Future<RunnerSuite>>[
+          controller!.suite
+        ];
+        if (_browser.onUncaughtException != null) {
+          futures.add(_browser.onUncaughtException!.then<RunnerSuite>(
+              (String error) =>
+                  throw Exception('Exception while loading suite: $error')));
+        }
+
+        final RunnerSuite suite = await Future.any(futures);
+        return suite;
       } catch (_) {
         closeIframe();
         rethrow;
@@ -1097,7 +1110,6 @@ class BrowserManager {
       default:
         // Unreachable.
         assert(false);
-        break;
     }
   }
 
@@ -1147,5 +1159,3 @@ class _BrowserEnvironment implements Environment {
   @override
   CancelableOperation<void> displayPause() => _manager._displayPause();
 }
-
-bool get isCirrus => Platform.environment['CIRRUS_CI'] == 'true';

@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include "flutter/testing/testing.h"  // IWYU pragma: keep.
+#include "fml/closure.h"
 #include "fml/synchronization/waitable_event.h"
+#include "impeller/renderer/backend/vulkan/command_buffer_vk.h"
 #include "impeller/renderer/backend/vulkan/descriptor_pool_vk.h"
 #include "impeller/renderer/backend/vulkan/resource_manager_vk.h"
 #include "impeller/renderer/backend/vulkan/test/mock_vulkan.h"
@@ -14,8 +16,8 @@ namespace testing {
 TEST(DescriptorPoolRecyclerVKTest, GetDescriptorPoolRecyclerCreatesNewPools) {
   auto const context = MockVulkanContextBuilder().Build();
 
-  auto const [pool1, _] = context->GetDescriptorPoolRecycler()->Get(1024);
-  auto const [pool2, __] = context->GetDescriptorPoolRecycler()->Get(1024);
+  auto const pool1 = context->GetDescriptorPoolRecycler()->Get();
+  auto const pool2 = context->GetDescriptorPoolRecycler()->Get();
 
   // The two descriptor pools should be different.
   EXPECT_NE(pool1.get(), pool2.get());
@@ -23,50 +25,13 @@ TEST(DescriptorPoolRecyclerVKTest, GetDescriptorPoolRecyclerCreatesNewPools) {
   context->Shutdown();
 }
 
-TEST(DescriptorPoolRecyclerVKTest, DescriptorPoolCapacityIsRoundedUp) {
-  auto const context = MockVulkanContextBuilder().Build();
-  auto const [pool1, capacity] = context->GetDescriptorPoolRecycler()->Get(1);
-
-  // Rounds up to a minimum of 64.
-  EXPECT_EQ(capacity, 64u);
-
-  auto const [pool2, capacity_2] =
-      context->GetDescriptorPoolRecycler()->Get(1023);
-
-  // Rounds up to the next power of two.
-  EXPECT_EQ(capacity_2, 1024u);
-
-  context->Shutdown();
-}
-
-namespace {
-
-// Invokes the provided callback when the destructor is called.
-//
-// Can be moved, but not copied.
-class DeathRattle final {
- public:
-  explicit DeathRattle(std::function<void()> callback)
-      : callback_(std::move(callback)) {}
-
-  DeathRattle(DeathRattle&&) = default;
-  DeathRattle& operator=(DeathRattle&&) = default;
-
-  ~DeathRattle() { callback_(); }
-
- private:
-  std::function<void()> callback_;
-};
-
-}  // namespace
-
 TEST(DescriptorPoolRecyclerVKTest, ReclaimMakesDescriptorPoolAvailable) {
   auto const context = MockVulkanContextBuilder().Build();
 
   {
     // Fetch a pool (which will be created).
     auto pool = DescriptorPoolVK(context);
-    pool.AllocateDescriptorSets(1024, 1024, 1024, {});
+    pool.AllocateDescriptorSets({}, *context);
   }
 
   // There is a chance that the first death rattle item below is destroyed in
@@ -80,15 +45,15 @@ TEST(DescriptorPoolRecyclerVKTest, ReclaimMakesDescriptorPoolAvailable) {
     // destroyed. That should give us a non-flaky signal that the pool has been
     // reclaimed as well.
     auto waiter = fml::AutoResetWaitableEvent();
-    auto rattle = DeathRattle([&waiter]() { waiter.Signal(); });
+    auto rattle = fml::ScopedCleanupClosure([&waiter]() { waiter.Signal(); });
     {
-      UniqueResourceVKT<DeathRattle> resource(context->GetResourceManager(),
-                                              std::move(rattle));
+      UniqueResourceVKT<fml::ScopedCleanupClosure> resource(
+          context->GetResourceManager(), std::move(rattle));
     }
     waiter.Wait();
   }
 
-  auto const [pool, _] = context->GetDescriptorPoolRecycler()->Get(1024);
+  auto const pool = context->GetDescriptorPoolRecycler()->Get();
 
   // Now check that we only ever created one pool.
   auto const called = GetMockVulkanFunctions(context->GetDevice());
@@ -106,7 +71,7 @@ TEST(DescriptorPoolRecyclerVKTest, ReclaimDropsDescriptorPoolIfSizeIsExceeded) {
     std::vector<std::unique_ptr<DescriptorPoolVK>> pools;
     for (auto i = 0u; i < 33; i++) {
       auto pool = std::make_unique<DescriptorPoolVK>(context);
-      pool->AllocateDescriptorSets(1024, 1024, 1024, {});
+      pool->AllocateDescriptorSets({}, *context);
       pools.push_back(std::move(pool));
     }
   }
@@ -114,10 +79,10 @@ TEST(DescriptorPoolRecyclerVKTest, ReclaimDropsDescriptorPoolIfSizeIsExceeded) {
   // See note above.
   for (auto i = 0u; i < 2; i++) {
     auto waiter = fml::AutoResetWaitableEvent();
-    auto rattle = DeathRattle([&waiter]() { waiter.Signal(); });
+    auto rattle = fml::ScopedCleanupClosure([&waiter]() { waiter.Signal(); });
     {
-      UniqueResourceVKT<DeathRattle> resource(context->GetResourceManager(),
-                                              std::move(rattle));
+      UniqueResourceVKT<fml::ScopedCleanupClosure> resource(
+          context->GetResourceManager(), std::move(rattle));
     }
     waiter.Wait();
   }
@@ -135,17 +100,17 @@ TEST(DescriptorPoolRecyclerVKTest, ReclaimDropsDescriptorPoolIfSizeIsExceeded) {
     std::vector<std::unique_ptr<DescriptorPoolVK>> pools;
     for (auto i = 0u; i < 33; i++) {
       auto pool = std::make_unique<DescriptorPoolVK>(context);
-      pool->AllocateDescriptorSets(1024, 1024, 1024, {});
+      pool->AllocateDescriptorSets({}, *context);
       pools.push_back(std::move(pool));
     }
   }
 
   for (auto i = 0u; i < 2; i++) {
     auto waiter = fml::AutoResetWaitableEvent();
-    auto rattle = DeathRattle([&waiter]() { waiter.Signal(); });
+    auto rattle = fml::ScopedCleanupClosure([&waiter]() { waiter.Signal(); });
     {
-      UniqueResourceVKT<DeathRattle> resource(context->GetResourceManager(),
-                                              std::move(rattle));
+      UniqueResourceVKT<fml::ScopedCleanupClosure> resource(
+          context->GetResourceManager(), std::move(rattle));
     }
     waiter.Wait();
   }
@@ -155,6 +120,28 @@ TEST(DescriptorPoolRecyclerVKTest, ReclaimDropsDescriptorPoolIfSizeIsExceeded) {
   EXPECT_EQ(
       std::count(called->begin(), called->end(), "vkCreateDescriptorPool"),
       34u);
+
+  context->Shutdown();
+}
+
+TEST(DescriptorPoolRecyclerVKTest, MultipleCommandBuffersShareDescriptorPool) {
+  auto const context = MockVulkanContextBuilder().Build();
+
+  auto cmd_buffer_1 = context->CreateCommandBuffer();
+  auto cmd_buffer_2 = context->CreateCommandBuffer();
+
+  CommandBufferVK& vk_1 = CommandBufferVK::Cast(*cmd_buffer_1);
+  CommandBufferVK& vk_2 = CommandBufferVK::Cast(*cmd_buffer_2);
+
+  EXPECT_EQ(&vk_1.GetDescriptorPool(), &vk_2.GetDescriptorPool());
+
+  // Resetting resources creates a new pool.
+  context->DisposeThreadLocalCachedResources();
+
+  auto cmd_buffer_3 = context->CreateCommandBuffer();
+  CommandBufferVK& vk_3 = CommandBufferVK::Cast(*cmd_buffer_3);
+
+  EXPECT_NE(&vk_1.GetDescriptorPool(), &vk_3.GetDescriptorPool());
 
   context->Shutdown();
 }

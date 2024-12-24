@@ -42,7 +42,10 @@ bool DisplayListEmbedderViewSlice::recording_ended() {
   return builder_ == nullptr;
 }
 
+void ExternalViewEmbedder::CollectView(int64_t view_id) {}
+
 void ExternalViewEmbedder::SubmitFlutterView(
+    int64_t flutter_view_id,
     GrDirectContext* context,
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {
@@ -81,7 +84,7 @@ void MutatorsStack::PushOpacity(const int& alpha) {
 }
 
 void MutatorsStack::PushBackdropFilter(
-    const std::shared_ptr<const DlImageFilter>& filter,
+    const std::shared_ptr<DlImageFilter>& filter,
     const SkRect& filter_rect) {
   std::shared_ptr<Mutator> element =
       std::make_shared<Mutator>(filter, filter_rect);

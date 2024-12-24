@@ -5,7 +5,6 @@
 #include "dart_component_controller.h"
 
 #include <fcntl.h>
-#include <fml/logging.h>
 #include <lib/async-loop/loop.h>
 #include <lib/async/cpp/task.h>
 #include <lib/async/default.h>
@@ -14,7 +13,6 @@
 #include <lib/fdio/namespace.h>
 #include <lib/fidl/cpp/string.h>
 #include <lib/sys/cpp/service_directory.h>
-#include <lib/syslog/global.h>
 #include <lib/vfs/cpp/composed_service_dir.h>
 #include <lib/vfs/cpp/remote_dir.h>
 #include <lib/zx/clock.h>
@@ -28,9 +26,9 @@
 #include <utility>
 
 #include "dart_api.h"
+#include "flutter/fml/logging.h"
 #include "runtime/dart/utils/files.h"
 #include "runtime/dart/utils/handle_exception.h"
-#include "runtime/dart/utils/inlines.h"
 #include "runtime/dart/utils/tempfs.h"
 #include "third_party/dart/runtime/include/dart_tools_api.h"
 #include "third_party/tonic/converter/dart_converter.h"
@@ -41,7 +39,6 @@
 #include "third_party/tonic/logging/dart_invoke.h"
 
 #include "builtin_libraries.h"
-#include "logging.h"
 
 using tonic::ToDart;
 
@@ -124,8 +121,8 @@ DartComponentController::DartComponentController(
   zx_status_t idle_timer_status =
       zx::timer::create(ZX_TIMER_SLACK_LATE, ZX_CLOCK_MONOTONIC, &idle_timer_);
   if (idle_timer_status != ZX_OK) {
-    FX_LOGF(INFO, LOG_TAG, "Idle timer creation failed: %s",
-            zx_status_get_string(idle_timer_status));
+    FML_LOG(INFO) << "Idle timer creation failed: "
+                  << zx_status_get_string(idle_timer_status);
   } else {
     idle_wait_.set_object(idle_timer_.get());
     idle_wait_.set_trigger(ZX_TIMER_SIGNALED);
@@ -156,12 +153,11 @@ bool DartComponentController::SetUp() {
   }
 
   if (SetUpFromAppSnapshot()) {
-    FX_LOGF(INFO, LOG_TAG, "%s is running from an app snapshot", url_.c_str());
+    FML_LOG(INFO) << url_ << " is running from an app snapshot";
   } else if (SetUpFromKernel()) {
-    FX_LOGF(INFO, LOG_TAG, "%s is running from kernel", url_.c_str());
+    FML_LOG(INFO) << url_ << " is running from kernel";
   } else {
-    FX_LOGF(ERROR, LOG_TAG, "Failed to set up component controller for %s.",
-            url_.c_str());
+    FML_LOG(ERROR) << "Failed to set up component controller for " << url_;
     return false;
   }
 
@@ -170,14 +166,14 @@ bool DartComponentController::SetUp() {
 
 bool DartComponentController::CreateAndBindNamespace() {
   if (!start_info_.has_ns()) {
-    FX_LOG(ERROR, LOG_TAG, "Component start info does not have a namespace.");
+    FML_LOG(ERROR) << "Component start info does not have a namespace.";
     return false;
   }
 
   const zx_status_t ns_create_status = fdio_ns_create(&namespace_);
   if (ns_create_status != ZX_OK) {
-    FX_LOGF(ERROR, LOG_TAG, "Failed to create namespace: %s",
-            zx_status_get_string(ns_create_status));
+    FML_LOG(ERROR) << "Failed to create namespace: "
+                   << zx_status_get_string(ns_create_status);
   }
 
   dart_utils::BindTemp(namespace_);
@@ -205,8 +201,8 @@ bool DartComponentController::CreateAndBindNamespace() {
     const zx_status_t ns_bind_status =
         fdio_ns_bind(namespace_, path.c_str(), dir.TakeChannel().release());
     if (ns_bind_status != ZX_OK) {
-      FX_LOGF(ERROR, LOG_TAG, "Failed to bind %s to namespace: %s",
-              path.c_str(), zx_status_get_string(ns_bind_status));
+      FML_LOG(ERROR) << "Failed to bind " << path << " to namespace: "
+                     << zx_status_get_string(ns_bind_status);
       return false;
     }
   }
@@ -214,41 +210,42 @@ bool DartComponentController::CreateAndBindNamespace() {
   dart_outgoing_dir_request_ = dart_outgoing_dir_ptr_.NewRequest();
 
   fuchsia::io::DirectoryHandle dart_public_dir;
-  // TODO(anmittal): when fixing enumeration using new c++ vfs, make sure that
-  // flutter_public_dir is only accessed once we receive OnOpen Event.
-  // That will prevent FL-175 for public directory
-  fdio_service_connect_at(dart_outgoing_dir_ptr_.channel().get(), "svc",
-                          dart_public_dir.NewRequest().TakeChannel().release());
+  {
+    auto request = dart_public_dir.NewRequest().TakeChannel();
+    const zx_status_t status =
+        fdio_open3_at(dart_outgoing_dir_ptr_.channel().get(), "svc",
+                      uint64_t{fuchsia::io::PERM_READABLE}, request.release());
+    if (status != ZX_OK) {
+      FML_LOG(ERROR) << "Failed to open /svc in outgoing directory: "
+                     << zx_status_get_string(status);
+      return false;
+    }
+  }
 
   auto composed_service_dir = std::make_unique<vfs::ComposedServiceDir>();
   composed_service_dir->set_fallback(std::move(dart_public_dir));
 
-  // Clone and check if client is servicing the directory.
-  dart_outgoing_dir_ptr_->Clone(
-      fuchsia::io::OpenFlags::DESCRIBE |
-          fuchsia::io::OpenFlags::CLONE_SAME_RIGHTS,
-      dart_outgoing_dir_ptr_to_check_on_open_.NewRequest());
+  // Request an event from the directory to ensure it is servicing requests.
+  dart_outgoing_dir_ptr_->Open3(
+      ".",
+      fuchsia::io::Flags::PROTOCOL_NODE |
+          fuchsia::io::Flags::FLAG_SEND_REPRESENTATION,
+      {}, dart_outgoing_dir_ptr_to_check_on_open_.NewRequest().TakeChannel());
 
   // Collect our standard set of directories.
-  std::vector<std::string> other_dirs = {"debug", "ctrl", "diagnostics"};
+  std::vector<std::string> other_dirs = {"debug", "ctrl"};
 
-  dart_outgoing_dir_ptr_to_check_on_open_.events().OnOpen =
-      [this, other_dirs](zx_status_t status, auto unused) {
+  dart_outgoing_dir_ptr_to_check_on_open_.events().OnRepresentation =
+      [this, other_dirs](auto unused) {
         dart_outgoing_dir_ptr_to_check_on_open_.Unbind();
-        if (status != ZX_OK) {
-          FML_LOG(ERROR) << "could not bind out directory for dart component("
-                         << label_ << "): " << zx_status_get_string(status);
-          return;
-        }
-
         // add other directories as RemoteDirs.
         for (auto& dir_str : other_dirs) {
           fuchsia::io::DirectoryHandle dir;
           auto request = dir.NewRequest().TakeChannel();
-          auto status = fdio_open_at(
+          const zx_status_t status = fdio_open3_at(
               dart_outgoing_dir_ptr_.channel().get(), dir_str.c_str(),
-              static_cast<uint32_t>(fuchsia::io::OpenFlags::DIRECTORY |
-                                    fuchsia::io::OpenFlags::RIGHT_READABLE),
+              uint64_t{fuchsia::io::Flags::PROTOCOL_DIRECTORY |
+                       fuchsia::io::PERM_READABLE},
               request.release());
           if (status == ZX_OK) {
             dart_outgoing_dir_->AddEntry(
@@ -282,11 +279,11 @@ bool DartComponentController::CreateAndBindNamespace() {
   dart_outgoing_dir_->AddEntry("svc", std::move(composed_service_dir));
 
   if (start_info_.has_outgoing_dir()) {
+    fidl::ServerEnd<fuchsia_io::Directory> server_end{
+        start_info_.mutable_outgoing_dir()->TakeChannel()};
     dart_outgoing_dir_->Serve(
-        fuchsia::io::OpenFlags::RIGHT_READABLE |
-            fuchsia::io::OpenFlags::RIGHT_WRITABLE |
-            fuchsia::io::OpenFlags::DIRECTORY,
-        start_info_.mutable_outgoing_dir()->TakeChannel());
+        fuchsia_io::wire::kPermReadable | fuchsia_io::wire::kPermWritable,
+        std::move(server_end));
   }
 
   return true;
@@ -304,26 +301,15 @@ bool DartComponentController::SetUpFromKernel() {
           isolate_snapshot_data_)) {
     return false;
   }
-  if (!dart_utils::MappedResource::LoadFromNamespace(
-          nullptr, "/pkg/data/isolate_core_snapshot_instructions.bin",
-          isolate_snapshot_instructions_, true /* executable */)) {
-    return false;
-  }
-
-  if (!CreateIsolate(isolate_snapshot_data_.address(),
-                     isolate_snapshot_instructions_.address())) {
-    return false;
-  }
-
-  Dart_EnterScope();
 
   std::string str(reinterpret_cast<const char*>(manifest.address()),
                   manifest.size());
   Dart_Handle library = Dart_Null();
+
   for (size_t start = 0; start < manifest.size();) {
     size_t end = str.find("\n", start);
     if (end == std::string::npos) {
-      FX_LOG(ERROR, LOG_TAG, "Malformed manifest");
+      FML_LOG(ERROR) << "Malformed manifest";
       Dart_ExitScope();
       return false;
     }
@@ -334,27 +320,35 @@ bool DartComponentController::SetUpFromKernel() {
     dart_utils::MappedResource kernel;
     if (!dart_utils::MappedResource::LoadFromNamespace(namespace_, path,
                                                        kernel)) {
-      FX_LOGF(ERROR, LOG_TAG, "Cannot load kernel from namespace: %s",
-              path.c_str());
+      FML_LOG(ERROR) << "Cannot load kernel from namespace: " << path;
       Dart_ExitScope();
       return false;
     }
-    library = Dart_LoadLibraryFromKernel(kernel.address(), kernel.size());
-    if (Dart_IsError(library)) {
-      FX_LOGF(ERROR, LOG_TAG, "Cannot load library from kernel: %s",
-              Dart_GetError(library));
-      Dart_ExitScope();
-      return false;
-    }
-
     kernel_peices_.emplace_back(std::move(kernel));
   }
+
+  if (!CreateIsolate(isolate_snapshot_data_.address(),
+                     /*isolate_snapshot_instructions=*/nullptr)) {
+    return false;
+  }
+
+  Dart_EnterScope();
+
+  for (const auto& kernel : kernel_peices_) {
+    library = Dart_LoadLibraryFromKernel(kernel.address(), kernel.size());
+    if (Dart_IsError(library)) {
+      FML_LOG(ERROR) << "Cannot load library from kernel: "
+                     << Dart_GetError(library);
+      Dart_ExitScope();
+      return false;
+    }
+  }
+
   Dart_SetRootLibrary(library);
 
   Dart_Handle result = Dart_FinalizeLoading(false);
   if (Dart_IsError(result)) {
-    FX_LOGF(ERROR, LOG_TAG, "Failed to FinalizeLoading: %s",
-            Dart_GetError(result));
+    FML_LOG(ERROR) << "Failed to FinalizeLoading: " << Dart_GetError(result);
     Dart_ExitScope();
     return false;
   }
@@ -381,11 +375,8 @@ bool DartComponentController::SetUpFromAppSnapshot() {
             isolate_snapshot_data_)) {
       return false;
     }
-    if (!dart_utils::MappedResource::LoadFromNamespace(
-            namespace_, data_path_ + "/isolate_snapshot_instructions.bin",
-            isolate_snapshot_instructions_, true /* executable */)) {
-      return false;
-    }
+    isolate_data = isolate_snapshot_data_.address();
+    isolate_instructions = nullptr;
   }
   return CreateIsolate(isolate_data, isolate_instructions);
 #endif  // defined(AOT_RUNTIME)
@@ -404,11 +395,15 @@ bool DartComponentController::CreateIsolate(
   auto state = new std::shared_ptr<tonic::DartState>(new tonic::DartState(
       namespace_fd, [this](Dart_Handle result) { MessageEpilogue(result); }));
 
+  Dart_IsolateFlags isolate_flags;
+  Dart_IsolateFlagsInitialize(&isolate_flags);
+  isolate_flags.null_safety = true;
+
   isolate_ = Dart_CreateIsolateGroup(
       url_.c_str(), label_.c_str(), isolate_snapshot_data,
-      isolate_snapshot_instructions, nullptr /* flags */, state, state, &error);
+      isolate_snapshot_instructions, &isolate_flags, state, state, &error);
   if (!isolate_) {
-    FX_LOGF(ERROR, LOG_TAG, "Dart_CreateIsolateGroup failed: %s", error);
+    FML_LOG(ERROR) << "Dart_CreateIsolateGroup failed: " << error;
     return false;
   }
 
@@ -476,7 +471,7 @@ bool DartComponentController::RunDartMain() {
   if (error != nullptr) {
     Dart_EnterIsolate(isolate_);
     Dart_ShutdownIsolate();
-    FX_LOGF(ERROR, LOG_TAG, "Unable to make isolate runnable: %s", error);
+    FML_LOG(ERROR) << "Unable to make isolate runnable: " << error;
     free(error);
     return false;
   }
@@ -491,8 +486,8 @@ bool DartComponentController::RunDartMain() {
       Dart_NewListOfTypeFilled(string_type, Dart_EmptyString(), 0);
 
   if (Dart_IsError(dart_arguments)) {
-    FX_LOGF(ERROR, LOG_TAG, "Failed to allocate Dart arguments list: %s",
-            Dart_GetError(dart_arguments));
+    FML_LOG(ERROR) << "Failed to allocate Dart arguments list: "
+                   << Dart_GetError(dart_arguments);
     Dart_ExitScope();
     return false;
   }
@@ -500,9 +495,8 @@ bool DartComponentController::RunDartMain() {
   Dart_Handle user_main = Dart_GetField(Dart_RootLibrary(), ToDart("main"));
 
   if (Dart_IsError(user_main)) {
-    FX_LOGF(ERROR, LOG_TAG,
-            "Failed to locate user_main in the root library: %s",
-            Dart_GetError(user_main));
+    FML_LOG(ERROR) << "Failed to locate user_main in the root library: "
+                   << Dart_GetError(user_main);
     Dart_ExitScope();
     return false;
   }
@@ -510,8 +504,8 @@ bool DartComponentController::RunDartMain() {
   Dart_Handle fuchsia_lib = Dart_LookupLibrary(tonic::ToDart("dart:fuchsia"));
 
   if (Dart_IsError(fuchsia_lib)) {
-    FX_LOGF(ERROR, LOG_TAG, "Failed to locate dart:fuchsia: %s",
-            Dart_GetError(fuchsia_lib));
+    FML_LOG(ERROR) << "Failed to locate dart:fuchsia: "
+                   << Dart_GetError(fuchsia_lib);
     Dart_ExitScope();
     return false;
   }
@@ -523,7 +517,7 @@ bool DartComponentController::RunDartMain() {
     auto dart_state = tonic::DartState::Current();
     if (!dart_state->has_set_return_code()) {
       // The program hasn't set a return code meaning this exit is unexpected.
-      FX_LOG(ERROR, LOG_TAG, Dart_GetError(main_result));
+      FML_LOG(ERROR) << Dart_GetError(main_result);
       return_code_ = tonic::GetErrorExitCode(main_result);
 
       dart_utils::HandleIfException(runner_incoming_services_, url_,
@@ -606,8 +600,7 @@ void DartComponentController::MessageEpilogue(Dart_Handle result) {
   zx_status_t status =
       idle_timer_.set(idle_start_ + kIdleWaitDuration, kIdleSlack);
   if (status != ZX_OK) {
-    FX_LOGF(INFO, LOG_TAG, "Idle timer set failed: %s",
-            zx_status_get_string(status));
+    FML_LOG(INFO) << "Idle timer set failed: " << zx_status_get_string(status);
   }
 }
 
@@ -633,8 +626,8 @@ void DartComponentController::OnIdleTimer(async_dispatcher_t* dispatcher,
     // Early wakeup or message pushed idle time forward: reschedule.
     zx_status_t status = idle_timer_.set(deadline, kIdleSlack);
     if (status != ZX_OK) {
-      FX_LOGF(INFO, LOG_TAG, "Idle timer set failed: %s",
-              zx_status_get_string(status));
+      FML_LOG(INFO) << "Idle timer set failed: "
+                    << zx_status_get_string(status);
     }
   }
   wait->Begin(dispatcher);  // ignore errors

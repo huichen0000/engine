@@ -46,8 +46,7 @@ class PlatformViewAndroid final : public PlatformView {
   PlatformViewAndroid(PlatformView::Delegate& delegate,
                       const flutter::TaskRunners& task_runners,
                       const std::shared_ptr<PlatformViewAndroidJNI>& jni_facade,
-                      bool use_software_rendering,
-                      uint8_t msaa_samples);
+                      bool use_software_rendering);
 
   //----------------------------------------------------------------------------
   /// @brief      Creates a new PlatformViewAndroid but using an existing
@@ -118,12 +117,6 @@ class PlatformViewAndroid final : public PlatformView {
   std::shared_ptr<PlatformMessageHandler> GetPlatformMessageHandler()
       const override {
     return platform_message_handler_;
-  }
-
-  void SetIsRenderingToImageView(bool value) {
-    if (GetImpellerContext()) {
-      GetImpellerContext()->SetSyncPresentation(value);
-    }
   }
 
  private:

@@ -17,8 +17,10 @@ namespace gpu {
 IMPLEMENT_WRAPPERTYPEINFO(flutter_gpu, CommandBuffer);
 
 CommandBuffer::CommandBuffer(
+    std::shared_ptr<impeller::Context> context,
     std::shared_ptr<impeller::CommandBuffer> command_buffer)
-    : command_buffer_(std::move(command_buffer)) {}
+    : context_(std::move(context)),
+      command_buffer_(std::move(command_buffer)) {}
 
 CommandBuffer::~CommandBuffer() = default;
 
@@ -32,10 +34,7 @@ void CommandBuffer::AddRenderPass(
 }
 
 bool CommandBuffer::Submit() {
-  for (auto& encodable : encodables_) {
-    encodable->EncodeCommands();
-  }
-  return command_buffer_->SubmitCommands();
+  return CommandBuffer::Submit({});
 }
 
 bool CommandBuffer::Submit(
@@ -43,7 +42,26 @@ bool CommandBuffer::Submit(
   for (auto& encodable : encodables_) {
     encodable->EncodeCommands();
   }
-  return command_buffer_->SubmitCommands(completion_callback);
+
+  // For the GLES backend, command queue submission just flushes the reactor,
+  // which needs to happen on the raster thread.
+  if (context_->GetBackendType() == impeller::Context::BackendType::kOpenGLES) {
+    auto dart_state = flutter::UIDartState::Current();
+    auto& task_runners = dart_state->GetTaskRunners();
+
+    task_runners.GetRasterTaskRunner()->PostTask(fml::MakeCopyable(
+        [context = context_, command_buffer = command_buffer_,
+         completion_callback = completion_callback]() mutable {
+          context->GetCommandQueue()
+              ->Submit({command_buffer}, completion_callback)
+              .ok();
+        }));
+    return true;
+  }
+
+  return context_->GetCommandQueue()
+      ->Submit({command_buffer_}, completion_callback)
+      .ok();
 }
 
 }  // namespace gpu
@@ -57,6 +75,7 @@ bool InternalFlutterGpu_CommandBuffer_Initialize(
     Dart_Handle wrapper,
     flutter::gpu::Context* contextWrapper) {
   auto res = fml::MakeRefCounted<flutter::gpu::CommandBuffer>(
+      contextWrapper->GetContext(),
       contextWrapper->GetContext()->CreateCommandBuffer());
   res->AssociateWithDartWrapper(wrapper);
 
@@ -85,7 +104,7 @@ Dart_Handle InternalFlutterGpu_CommandBuffer_Submit(
       std::make_unique<tonic::DartPersistentValue>(dart_state,
                                                    completion_callback);
 
-  bool success = wrapper->Submit(fml::MakeCopyable(
+  auto ui_task_completion_callback = fml::MakeCopyable(
       [callback = std::move(persistent_completion_callback),
        task_runners](impeller::CommandBuffer::Status status) mutable {
         bool success = status != impeller::CommandBuffer::Status::kError;
@@ -106,7 +125,8 @@ Dart_Handle InternalFlutterGpu_CommandBuffer_Submit(
               callback.reset();
             });
         task_runners.GetUITaskRunner()->PostTask(ui_completion_task);
-      }));
+      });
+  bool success = wrapper->Submit(ui_task_completion_callback);
   if (!success) {
     return tonic::ToDart("Failed to submit CommandBuffer");
   }

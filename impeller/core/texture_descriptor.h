@@ -5,6 +5,7 @@
 #ifndef FLUTTER_IMPELLER_CORE_TEXTURE_DESCRIPTOR_H_
 #define FLUTTER_IMPELLER_CORE_TEXTURE_DESCRIPTOR_H_
 
+#include <cstdint>
 #include "impeller/core/formats.h"
 #include "impeller/geometry/size.h"
 
@@ -40,8 +41,7 @@ struct TextureDescriptor {
   PixelFormat format = PixelFormat::kUnknown;
   ISize size;
   size_t mip_count = 1u;  // Size::MipCount is usually appropriate.
-  TextureUsageMask usage =
-      static_cast<TextureUsageMask>(TextureUsage::kShaderRead);
+  TextureUsageMask usage = TextureUsage::kShaderRead;
   SampleCount sample_count = SampleCount::kCount1;
   CompressionType compression_type = CompressionType::kLossless;
 
@@ -50,6 +50,22 @@ struct TextureDescriptor {
       return 0u;
     }
     return size.Area() * BytesPerPixelForPixelFormat(format);
+  }
+
+  constexpr size_t GetByteSizeOfAllMipLevels() const {
+    if (!IsValid()) {
+      return 0u;
+    }
+    size_t result = 0u;
+    int64_t width = size.width;
+    int64_t height = size.height;
+    for (auto i = 0u; i < mip_count; i++) {
+      result +=
+          ISize(width, height).Area() * BytesPerPixelForPixelFormat(format);
+      width /= 2;
+      height /= 2;
+    }
+    return result;
   }
 
   constexpr size_t GetBytesPerRow() const {

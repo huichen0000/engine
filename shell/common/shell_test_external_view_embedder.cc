@@ -46,7 +46,6 @@ void ShellTestExternalViewEmbedder::BeginFrame(
 
 // |ExternalViewEmbedder|
 void ShellTestExternalViewEmbedder::PrepareFlutterView(
-    int64_t flutter_view_id,
     SkISize frame_size,
     double device_pixel_ratio) {
   visited_platform_views_.clear();
@@ -77,7 +76,7 @@ void ShellTestExternalViewEmbedder::PushVisitedPlatformView(int64_t view_id) {
 
 // |ExternalViewEmbedder|
 void ShellTestExternalViewEmbedder::PushFilterToVisitedPlatformViews(
-    const std::shared_ptr<const DlImageFilter>& filter,
+    const std::shared_ptr<DlImageFilter>& filter,
     const SkRect& filter_rect) {
   for (int64_t id : visited_platform_views_) {
     EmbeddedViewParams params = current_composition_params_[id];
@@ -94,6 +93,7 @@ DlCanvas* ShellTestExternalViewEmbedder::CompositeEmbeddedView(
 
 // |ExternalViewEmbedder|
 void ShellTestExternalViewEmbedder::SubmitFlutterView(
+    int64_t flutter_view_id,
     GrDirectContext* context,
     const std::shared_ptr<impeller::AiksContext>& aiks_context,
     std::unique_ptr<SurfaceFrame> frame) {

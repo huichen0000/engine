@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #import <Metal/Metal.h>
+#import <OCMock/OCMock.h>
 #import <QuartzCore/QuartzCore.h>
 #import <XCTest/XCTest.h>
 
@@ -195,7 +196,7 @@
     @autoreleasepool {
       id<CAMetalDrawable> drawable = [layer nextDrawable];
       XCTAssertNotNil(drawable);
-      texture = (id<MTLTexture>)drawable.texture;
+      texture = drawable.texture;
       // Dropping the drawable must return texture to pool, so
       // next drawable should return the same texture.
     }
@@ -234,6 +235,62 @@
   XCTAssertNotNil(d6);
 
   [self removeMetalLayer:layer];
+}
+
+- (void)testTimeout {
+  FlutterMetalLayer* layer = [self addMetalLayer];
+  TestCompositor* compositor = [[TestCompositor alloc] initWithLayer:layer];
+
+  id<CAMetalDrawable> drawable = [layer nextDrawable];
+  BAIL_IF_NO_DRAWABLE(drawable);
+
+  __block MTLCommandBufferHandler handler;
+
+  id<MTLCommandBuffer> mockCommandBuffer = OCMProtocolMock(@protocol(MTLCommandBuffer));
+  OCMStub([mockCommandBuffer addCompletedHandler:OCMOCK_ANY]).andDo(^(NSInvocation* invocation) {
+    MTLCommandBufferHandler handlerOnStack;
+    [invocation getArgument:&handlerOnStack atIndex:2];
+    // Required to copy stack block to heap.
+    handler = handlerOnStack;
+  });
+
+  [(id<FlutterMetalDrawable>)drawable flutterPrepareForPresent:mockCommandBuffer];
+  [drawable present];
+  [compositor commitTransaction];
+
+  // Drawable will not be available until the command buffer completes.
+  drawable = [layer nextDrawable];
+  XCTAssertNil(drawable);
+
+  handler(mockCommandBuffer);
+
+  drawable = [layer nextDrawable];
+  XCTAssertNotNil(drawable);
+
+  [self removeMetalLayer:layer];
+}
+
+- (void)testDealloc {
+  __weak FlutterMetalLayer* weakLayer;
+  @autoreleasepool {
+    FlutterMetalLayer* layer = [self addMetalLayer];
+    weakLayer = layer;
+    TestCompositor* compositor = [[TestCompositor alloc] initWithLayer:layer];
+
+    id<CAMetalDrawable> drawable = [layer nextDrawable];
+    BAIL_IF_NO_DRAWABLE(drawable);
+    [drawable present];
+    [compositor commitTransaction];
+
+    [self removeMetalLayer:layer];
+  }
+  CFTimeInterval start = CACurrentMediaTime();
+  while (weakLayer != nil && CACurrentMediaTime() - start < 1) {
+    // Deallocating the layer after removing is not synchronous.
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, YES);
+  }
+
+  XCTAssertNil(weakLayer);
 }
 
 @end

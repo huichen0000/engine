@@ -15,17 +15,21 @@
 namespace impeller {
 
 class DeviceBufferVK final : public DeviceBuffer,
-                             public BackendCast<DeviceBufferVK, Buffer> {
+                             public BackendCast<DeviceBufferVK, DeviceBuffer> {
  public:
   DeviceBufferVK(DeviceBufferDescriptor desc,
                  std::weak_ptr<Context> context,
                  UniqueBufferVMA buffer,
-                 VmaAllocationInfo info);
+                 VmaAllocationInfo info,
+                 bool is_host_coherent);
 
   // |DeviceBuffer|
   ~DeviceBufferVK() override;
 
   vk::Buffer GetBuffer() const;
+
+  // Visible for testing.
+  bool IsHostCoherent() const;
 
  private:
   friend class AllocatorVK;
@@ -51,6 +55,7 @@ class DeviceBufferVK final : public DeviceBuffer,
 
   std::weak_ptr<Context> context_;
   UniqueResourceVKT<BufferResource> resource_;
+  bool is_host_coherent_ = false;
 
   // |DeviceBuffer|
   uint8_t* OnGetContents() const override;
@@ -61,13 +66,16 @@ class DeviceBufferVK final : public DeviceBuffer,
                         size_t offset) override;
 
   // |DeviceBuffer|
-  bool SetLabel(const std::string& label) override;
+  bool SetLabel(std::string_view label) override;
 
   // |DeviceBuffer|
-  bool SetLabel(const std::string& label, Range range) override;
+  bool SetLabel(std::string_view label, Range range) override;
 
   // |DeviceBuffer|
   void Flush(std::optional<Range> range) const override;
+
+  // |DeviceBuffer|
+  void Invalidate(std::optional<Range> range) const override;
 
   DeviceBufferVK(const DeviceBufferVK&) = delete;
 

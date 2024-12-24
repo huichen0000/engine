@@ -10,7 +10,6 @@ import 'package:ui/ui.dart' as ui;
 import '../../browser_detection.dart';
 import '../../color_filter.dart';
 import '../../dom.dart';
-import '../../embedder.dart';
 import '../../safe_browser_api.dart';
 import '../../util.dart';
 import '../../validators.dart';
@@ -18,6 +17,7 @@ import '../../vector_math.dart';
 import '../color_filter.dart';
 import '../path/path_utils.dart';
 import '../render_vertices.dart';
+import '../resource_manager.dart';
 import 'normalized_gradient.dart';
 import 'shader_builder.dart';
 import 'vertex_shaders.dart';
@@ -63,6 +63,9 @@ abstract class EngineGradient implements ui.Gradient {
 
   @override
   void dispose() {}
+
+  @override
+  String toString() => 'Gradient()';
 }
 
 class GradientSweep extends EngineGradient {
@@ -714,7 +717,7 @@ abstract class EngineImageFilter implements ui.ImageFilter {
   factory EngineImageFilter.blur({
     required double sigmaX,
     required double sigmaY,
-    required ui.TileMode tileMode,
+    required ui.TileMode? tileMode,
   }) = _BlurEngineImageFilter;
 
   factory EngineImageFilter.matrix({
@@ -729,11 +732,11 @@ abstract class EngineImageFilter implements ui.ImageFilter {
 }
 
 class _BlurEngineImageFilter extends EngineImageFilter {
-  _BlurEngineImageFilter({ this.sigmaX = 0.0, this.sigmaY = 0.0, this.tileMode = ui.TileMode.clamp }) : super._();
+  _BlurEngineImageFilter({ this.sigmaX = 0.0, this.sigmaY = 0.0, this.tileMode }) : super._();
 
   final double sigmaX;
   final double sigmaY;
-  final ui.TileMode tileMode;
+  final ui.TileMode? tileMode;
 
   // TODO(ferhat): implement TileMode.
   @override
@@ -755,7 +758,7 @@ class _BlurEngineImageFilter extends EngineImageFilter {
 
   @override
   String toString() {
-    return 'ImageFilter.blur($sigmaX, $sigmaY, $tileMode)';
+    return 'ImageFilter.blur($sigmaX, $sigmaY, ${tileModeString(tileMode)})';
   }
 }
 
@@ -804,7 +807,7 @@ abstract class EngineHtmlColorFilter implements EngineImageFilter {
   @override
   String get transformAttribute => '';
 
-  /// Make an [SvgFilter] and add it as a globabl resource using [flutterViewEmbedder]
+  /// Make an [SvgFilter] and add it as a globabl resource using [ResourceManager]
   /// The [DomElement] from the made [SvgFilter] is returned so it can be managed
   /// by the surface calling it.
   DomElement? makeSvgFilter(DomElement? filterElement);
@@ -860,7 +863,7 @@ class ModeHtmlColorFilter extends EngineHtmlColorFilter {
     }
 
     final SvgFilter svgFilter = svgFilterFromBlendMode(color, blendMode);
-    flutterViewEmbedder.addResource(svgFilter.element);
+    ResourceManager.instance.addResource(svgFilter.element);
     filterId = svgFilter.id;
 
     if (blendMode == ui.BlendMode.saturation ||
@@ -880,7 +883,7 @@ class MatrixHtmlColorFilter extends EngineHtmlColorFilter {
   @override
   DomElement? makeSvgFilter(DomNode? filterElement) {
     final SvgFilter svgFilter = svgFilterFromColorMatrix(matrix);
-    flutterViewEmbedder.addResource(svgFilter.element);
+    ResourceManager.instance.addResource(svgFilter.element);
     filterId = svgFilter.id;
     return svgFilter.element;
   }
@@ -911,7 +914,5 @@ EngineHtmlColorFilter? createHtmlColorFilter(EngineColorFilter? colorFilter) {
         throw UnimplementedError('ColorFilter.linearToSrgbGamma not implemented for HTML renderer');
       case ColorFilterType.srgbToLinearGamma:
         throw UnimplementedError('ColorFilter.srgbToLinearGamma not implemented for HTML renderer.');
-      default:
-        throw StateError('Unknown mode $colorFilter.type for ColorFilter.');
     }
 }

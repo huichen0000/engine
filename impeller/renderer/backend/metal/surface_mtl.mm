@@ -13,6 +13,12 @@
 #include "impeller/renderer/backend/metal/texture_mtl.h"
 #include "impeller/renderer/render_target.h"
 
+static_assert(__has_feature(objc_arc), "ARC must be enabled.");
+
+@protocol FlutterMetalDrawable <MTLDrawable>
+- (void)flutterPrepareForPresent:(nonnull id<MTLCommandBuffer>)commandBuffer;
+@end
+
 namespace impeller {
 
 #pragma GCC diagnostic push
@@ -63,8 +69,8 @@ static std::optional<RenderTarget> WrapTextureWithRenderTarget(
   TextureDescriptor resolve_tex_desc;
   resolve_tex_desc.format = FromMTLPixelFormat(texture.pixelFormat);
   resolve_tex_desc.size = root_size;
-  resolve_tex_desc.usage = static_cast<uint64_t>(TextureUsage::kRenderTarget) |
-                           static_cast<uint64_t>(TextureUsage::kShaderRead);
+  resolve_tex_desc.usage =
+      TextureUsage::kRenderTarget | TextureUsage::kShaderRead;
   resolve_tex_desc.sample_count = SampleCount::kCount1;
   resolve_tex_desc.storage_mode = StorageMode::kDevicePrivate;
 
@@ -94,7 +100,7 @@ static std::optional<RenderTarget> WrapTextureWithRenderTarget(
   msaa_tex_desc.sample_count = SampleCount::kCount4;
   msaa_tex_desc.format = resolve_tex->GetTextureDescriptor().format;
   msaa_tex_desc.size = resolve_tex->GetSize();
-  msaa_tex_desc.usage = static_cast<uint64_t>(TextureUsage::kRenderTarget);
+  msaa_tex_desc.usage = TextureUsage::kRenderTarget;
 
   auto msaa_tex = allocator.CreateTexture(msaa_tex_desc);
   if (!msaa_tex) {
@@ -218,12 +224,18 @@ IRect SurfaceMTL::coverage() const {
   return IRect::MakeSize(resolve_texture_->GetSize());
 }
 
-// |Surface|
-bool SurfaceMTL::Present() const {
+bool SurfaceMTL::PreparePresent() const {
   auto context = context_.lock();
   if (!context) {
     return false;
   }
+
+#ifdef IMPELLER_DEBUG
+  context->GetResourceAllocator()->DebugTraceMemoryStatistics();
+  if (frame_boundary_) {
+    ContextMTL::Cast(context.get())->GetCaptureManager()->FinishCapture();
+  }
+#endif  // IMPELLER_DEBUG
 
   if (requires_blit_) {
     if (!(source_texture_ && destination_texture_)) {
@@ -242,26 +254,62 @@ bool SurfaceMTL::Present() const {
     blit_pass->AddCopy(source_texture_, destination_texture_, std::nullopt,
                        clip_rect_->GetOrigin());
     blit_pass->EncodeCommands(context->GetResourceAllocator());
-    if (!blit_command_buffer->SubmitCommands()) {
+    if (!context->GetCommandQueue()->Submit({blit_command_buffer}).ok()) {
       return false;
     }
   }
 #ifdef IMPELLER_DEBUG
   ContextMTL::Cast(context.get())->GetGPUTracer()->MarkFrameEnd();
 #endif  // IMPELLER_DEBUG
+  prepared_ = true;
+  return true;
+}
+
+// |Surface|
+bool SurfaceMTL::Present() const {
+  if (!prepared_) {
+    PreparePresent();
+  }
+  auto context = context_.lock();
+  if (!context) {
+    return false;
+  }
 
   if (drawable_) {
     id<MTLCommandBuffer> command_buffer =
         ContextMTL::Cast(context.get())
             ->CreateMTLCommandBuffer("Present Waiter Command Buffer");
+
+    id<CAMetalDrawable> metal_drawable =
+        reinterpret_cast<id<CAMetalDrawable>>(drawable_);
+    if ([metal_drawable conformsToProtocol:@protocol(FlutterMetalDrawable)]) {
+      [(id<FlutterMetalDrawable>)metal_drawable
+          flutterPrepareForPresent:command_buffer];
+    }
+
+    // Intel iOS simulators do not seem to give backpressure on Metal drawable
+    // aquisition, which can result in Impeller running head of the GPU
+    // workload by dozens of frames. Slow this process down by blocking
+    // on submit until the last command buffer is at least scheduled.
+#if defined(FML_OS_IOS_SIMULATOR) && defined(FML_ARCH_CPU_X86_64)
+    constexpr bool alwaysWaitForScheduling = true;
+#else
+    constexpr bool alwaysWaitForScheduling = false;
+#endif  // defined(FML_OS_IOS_SIMULATOR) && defined(FML_ARCH_CPU_X86_64)
+
     // If the threads have been merged, or there is a pending frame capture,
     // then block on cmd buffer scheduling to ensure that the
     // transaction/capture work correctly.
-    if ([[NSThread currentThread] isMainThread] ||
-        [[MTLCaptureManager sharedCaptureManager] isCapturing]) {
+    if (present_with_transaction_ || [[NSThread currentThread] isMainThread] ||
+        [[MTLCaptureManager sharedCaptureManager] isCapturing] ||
+        alwaysWaitForScheduling) {
       TRACE_EVENT0("flutter", "waitUntilScheduled");
       [command_buffer commit];
+#if defined(FML_OS_IOS_SIMULATOR) && defined(FML_ARCH_CPU_X86_64)
+      [command_buffer waitUntilCompleted];
+#else
       [command_buffer waitUntilScheduled];
+#endif  // defined(FML_OS_IOS_SIMULATOR) && defined(FML_ARCH_CPU_X86_64)
       [drawable_ present];
     } else {
       // The drawable may come from a FlutterMetalLayer, so it can't be

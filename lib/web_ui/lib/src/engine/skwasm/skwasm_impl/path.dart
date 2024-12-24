@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:typed_data';
 
@@ -19,7 +20,7 @@ enum PathArcSize {
   large,
 }
 
-class SkwasmPath extends SkwasmObjectWrapper<RawPath> implements ui.Path {
+class SkwasmPath extends SkwasmObjectWrapper<RawPath> implements ScenePath {
   factory SkwasmPath() {
     return SkwasmPath.fromHandle(pathCreate());
   }
@@ -49,7 +50,7 @@ class SkwasmPath extends SkwasmObjectWrapper<RawPath> implements ui.Path {
   void lineTo(double x, double y) => pathLineTo(handle, x, y);
 
   @override
-  void relativeLineTo(double x, double y) => pathRelativeMoveTo(handle, x, y);
+  void relativeLineTo(double x, double y) => pathRelativeLineTo(handle, x, y);
 
   @override
   void quadraticBezierTo(double x1, double y1, double x2, double y2) =>
@@ -251,5 +252,16 @@ class SkwasmPath extends SkwasmObjectWrapper<RawPath> implements ui.Path {
   @override
   ui.PathMetrics computeMetrics({bool forceClosed = false}) {
     return SkwasmPathMetrics(path: this, forceClosed: forceClosed);
+  }
+
+  @override
+  String toSvgString() {
+    final SkStringHandle skString = pathGetSvgString(handle);
+    final Pointer<Int8> buffer = skStringGetData(skString);
+    final int length = skStringGetLength(skString);
+    final List<int> characters = List<int>.generate(length, (int i) => buffer[i]);
+    final String svgString = utf8.decode(characters);
+    skStringFree(skString);
+    return svgString;
   }
 }

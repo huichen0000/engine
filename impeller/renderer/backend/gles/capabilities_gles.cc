@@ -4,6 +4,7 @@
 
 #include "impeller/renderer/backend/gles/capabilities_gles.h"
 
+#include "impeller/core/formats.h"
 #include "impeller/renderer/backend/gles/proc_table_gles.h"
 
 namespace impeller {
@@ -20,6 +21,10 @@ static const constexpr char* kNvidiaTextureBorderClampExt =
 // https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_multisampled_render_to_texture.txt
 static const constexpr char* kMultisampledRenderToTextureExt =
     "GL_EXT_multisampled_render_to_texture";
+
+// https://registry.khronos.org/OpenGL/extensions/EXT/EXT_multisampled_render_to_texture2.txt
+static const constexpr char* kMultisampledRenderToTexture2Ext =
+    "GL_EXT_multisampled_render_to_texture2";
 
 CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
   {
@@ -102,6 +107,16 @@ CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
     num_shader_binary_formats = value;
   }
 
+  if (desc->IsES()) {
+    default_glyph_atlas_format_ = PixelFormat::kA8UNormInt;
+  } else {
+    default_glyph_atlas_format_ = PixelFormat::kR8UNormInt;
+  }
+
+  if (desc->GetGlVersion().major_version >= 3) {
+    supports_texture_to_texture_blits_ = true;
+  }
+
   supports_framebuffer_fetch_ = desc->HasExtension(kFramebufferFetchExt);
 
   if (desc->HasExtension(kTextureBorderClampExt) ||
@@ -112,11 +127,19 @@ CapabilitiesGLES::CapabilitiesGLES(const ProcTableGLES& gl) {
   if (desc->HasExtension(kMultisampledRenderToTextureExt)) {
     supports_implicit_msaa_ = true;
 
-    // We hard-code 4x MSAA, so let's make sure it's supported.
-    GLint value = 0;
-    gl.GetIntegerv(GL_MAX_SAMPLES_EXT, &value);
-    supports_offscreen_msaa_ = value >= 4;
+    if (desc->HasExtension(kMultisampledRenderToTexture2Ext)) {
+      // We hard-code 4x MSAA, so let's make sure it's supported.
+      GLint value = 0;
+      gl.GetIntegerv(GL_MAX_SAMPLES_EXT, &value);
+      supports_offscreen_msaa_ = value >= 4;
+    }
   }
+  is_es_ = desc->IsES();
+  is_angle_ = desc->IsANGLE();
+}
+
+bool CapabilitiesGLES::IsES() const {
+  return is_es_;
 }
 
 size_t CapabilitiesGLES::GetMaxTextureUnits(ShaderStage stage) const {
@@ -144,12 +167,8 @@ bool CapabilitiesGLES::SupportsSSBO() const {
   return false;
 }
 
-bool CapabilitiesGLES::SupportsBufferToTextureBlits() const {
-  return false;
-}
-
 bool CapabilitiesGLES::SupportsTextureToTextureBlits() const {
-  return false;
+  return supports_texture_to_texture_blits_;
 }
 
 bool CapabilitiesGLES::SupportsFramebufferFetch() const {
@@ -176,6 +195,10 @@ bool CapabilitiesGLES::SupportsDeviceTransientTextures() const {
   return false;
 }
 
+bool CapabilitiesGLES::SupportsTriangleFan() const {
+  return true;
+}
+
 PixelFormat CapabilitiesGLES::GetDefaultColorFormat() const {
   return PixelFormat::kR8G8B8A8UNormInt;
 }
@@ -186,6 +209,22 @@ PixelFormat CapabilitiesGLES::GetDefaultStencilFormat() const {
 
 PixelFormat CapabilitiesGLES::GetDefaultDepthStencilFormat() const {
   return PixelFormat::kD24UnormS8Uint;
+}
+
+bool CapabilitiesGLES::IsANGLE() const {
+  return is_angle_;
+}
+
+bool CapabilitiesGLES::SupportsPrimitiveRestart() const {
+  return false;
+}
+
+PixelFormat CapabilitiesGLES::GetDefaultGlyphAtlasFormat() const {
+  return default_glyph_atlas_format_;
+}
+
+ISize CapabilitiesGLES::GetMaximumRenderPassAttachmentSize() const {
+  return max_texture_size;
 }
 
 }  // namespace impeller

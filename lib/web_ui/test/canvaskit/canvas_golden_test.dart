@@ -21,11 +21,10 @@ const ui.Rect kDefaultRegion = ui.Rect.fromLTRB(0, 0, 500, 250);
 
 void testMain() {
   group('CkCanvas', () {
-    setUpCanvasKitTest();
+    setUpCanvasKitTest(withImplicitView: true);
 
     setUp(() {
       renderer.fontCollection.debugResetFallbackFonts();
-      renderer.fontCollection.fontFallbackManager!.downloadQueue.fallbackFontUrlPrefixOverride = 'assets/fallback_fonts/';
     });
 
     test('renders using non-recording canvas if weak refs are supported',
@@ -35,7 +34,7 @@ void testMain() {
       expect(canvas.runtimeType, CkCanvas);
       drawTestPicture(canvas);
       await matchPictureGolden(
-        'canvaskit_picture.png',
+        'canvaskit_weakref_picture.png',
         recorder.endRecording(),
         region: kDefaultRegion,
       );
@@ -451,7 +450,7 @@ void drawTestPicture(CkCanvas canvas) {
   canvas.drawCircle(const ui.Offset(30, 30), 10, CkPaint());
   {
     canvas.saveLayerWithFilter(
-        kDefaultRegion, ui.ImageFilter.blur(sigmaX: 5, sigmaY: 10));
+        kDefaultRegion, ui.ImageFilter.blur(sigmaX: 5, sigmaY: 10, tileMode: ui.TileMode.clamp));
     canvas.drawCircle(const ui.Offset(10, 10), 10, CkPaint());
     canvas.drawCircle(const ui.Offset(50, 50), 10, CkPaint());
     canvas.restore();
